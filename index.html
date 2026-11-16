@@ -297,7 +297,7 @@ th{color:var(--grey);font-size:11px;text-transform:uppercase;letter-spacing:.04e
         <div class="hrow"><h2>Labels</h2><button class="mini" onclick="lfOpen()">+ New</button></div>
         <div class="row" style="align-items:flex-end">
           <div><label>Label paper</label><select id="lblLayout" onchange="lblChanged()">
-            <option value="a4_21v">A4 sheet, 21 labels (70 × 42.5 mm), VCR</option>
+            <option value="a4_21v">A4 sheet, 21 labels, VCR (63.5 × 37.85 mm)</option>
             <option value="a4_24">A4 sheet, 24 labels (70 × 37 mm)</option>
             <option value="a4_21">A4 sheet, 21 labels (63.5 × 38.1 mm)</option>
             <option value="a4_custom">A4 sheet, my own measurements</option>
@@ -882,7 +882,7 @@ function printLot(lotId){ toast('Preparing labels…');
     var boxes=r.boxes.filter(function(b){ return b.status!=='Void'; }); printLabels(boxes,$('lblLayout').value); }).catch(function(e){ toast(e.message); });
 }
 function qrSvg(text){ var q=qrcode(0,'M'); q.addData(text); q.make(); return q.createSvgTag({cellSize:2,margin:0,scalable:true}); }
-var LC_DEF={top:0,left:0,w:70,h:42.4,gx:0,gy:0,cols:3,rows:7};
+var LC_DEF={top:16,left:7.25,w:63.5,h:37.85,gx:2.5,gy:0,cols:3,rows:7};
 function lcGet(){ var c={}, o={}; try{ c=JSON.parse(localStorage.getItem('lblCustom')||'{}'); }catch(e){}
   Object.keys(LC_DEF).forEach(function(k){ var v=parseFloat(c[k]); o[k]=isFinite(v)&&v>=0?v:LC_DEF[k]; });
   o.cols=Math.max(1,Math.round(o.cols)); o.rows=Math.max(1,Math.round(o.rows)); if(!o.w) o.w=LC_DEF.w; if(!o.h) o.h=LC_DEF.h; return o; }
@@ -891,7 +891,7 @@ function lcFill(){ var c=lcGet(); Object.keys(LC_DEF).forEach(function(k){ var e
 function lblChanged(){ var v=$('lblLayout').value; try{ localStorage.setItem('lblLayout',v); }catch(e){} $('lblCust').hidden=v!=='a4_custom'; if(v==='a4_custom') lcFill(); }
 function lblLayoutOf(layout){
   if(layout==='a4_custom'){ var c=lcGet(); return {w:c.w,h:c.h,cols:c.cols,rows:c.rows,top:c.top,left:c.left,gx:c.gx,gy:c.gy,page:'A4',pad:3}; }
-  return {a4_21v:{w:70,h:42.42,cols:3,rows:7,top:0,left:0,gx:0,gy:0,page:'A4',pad:4.5},a4_24:{w:70,h:37.1,cols:3,rows:8,top:0,left:0,gx:0,gy:0,page:'A4'},a4_21:{w:63.5,h:38.1,cols:3,rows:7,top:15.15,left:7.25,gx:2.54,gy:0,page:'A4'},th_50:{w:50,h:25,cols:1,rows:1,top:0,left:0,gx:0,gy:0,page:'50mm 25mm'}}[layout]||null;
+  return {a4_21v:{w:63.5,h:37.85,cols:3,rows:7,top:16,left:7.25,gx:2.5,gy:0,page:'A4',pad:3},a4_24:{w:70,h:37.1,cols:3,rows:8,top:0,left:0,gx:0,gy:0,page:'A4'},a4_21:{w:63.5,h:38.1,cols:3,rows:7,top:15.15,left:7.25,gx:2.54,gy:0,page:'A4'},th_50:{w:50,h:25,cols:1,rows:1,top:0,left:0,gx:0,gy:0,page:'50mm 25mm'}}[layout]||null;
 }
 function printTest(){ var lay=$('lblLayout').value, L=lblLayoutOf(lay), b=[];
   for(var i=1;i<=L.cols*L.rows;i++) b.push({id:'TEST'+('0'+i).slice(-2),product:'Alignment test',shade:'Sticker '+i,pcs:'-',batch:'',expiry:''});
