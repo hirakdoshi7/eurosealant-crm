@@ -296,13 +296,30 @@ th{color:var(--grey);font-size:11px;text-transform:uppercase;letter-spacing:.04e
       <div class="card">
         <div class="hrow"><h2>Labels</h2><button class="mini" onclick="lfOpen()">+ New</button></div>
         <div class="row" style="align-items:flex-end">
-          <div><label>Label paper</label><select id="lblLayout" onchange="try{localStorage.setItem('lblLayout',this.value)}catch(e){}">
+          <div><label>Label paper</label><select id="lblLayout" onchange="lblChanged()">
             <option value="a4_21v">A4 sheet, 21 labels (70 × 42.5 mm), VCR</option>
             <option value="a4_24">A4 sheet, 24 labels (70 × 37 mm)</option>
             <option value="a4_21">A4 sheet, 21 labels (63.5 × 38.1 mm)</option>
+            <option value="a4_custom">A4 sheet, my own measurements</option>
             <option value="th_50">Thermal roll, 50 × 25 mm</option></select></div>
           <div style="flex:0 0 auto"><button class="sec" onclick="lookupOpen()">Look up a box</button></div>
         </div>
+        <div id="lblCust" hidden>
+          <div class="sub" style="margin-top:8px">Measure one sticker sheet with a ruler, in millimetres. Saved on this device.</div>
+          <div class="row">
+            <div><label>Top margin (paper edge to first sticker)</label><input id="lc_top" type="number" step="0.5" inputmode="decimal"></div>
+            <div><label>Left margin</label><input id="lc_left" type="number" step="0.5" inputmode="decimal"></div>
+            <div><label>Sticker width</label><input id="lc_w" type="number" step="0.5" inputmode="decimal"></div>
+            <div><label>Sticker height</label><input id="lc_h" type="number" step="0.5" inputmode="decimal"></div>
+          </div>
+          <div class="row">
+            <div><label>Gap between columns</label><input id="lc_gx" type="number" step="0.5" inputmode="decimal"></div>
+            <div><label>Gap between rows</label><input id="lc_gy" type="number" step="0.5" inputmode="decimal"></div>
+            <div><label>Columns</label><input id="lc_cols" type="number" step="1" inputmode="numeric"></div>
+            <div><label>Rows</label><input id="lc_rows" type="number" step="1" inputmode="numeric"></div>
+          </div>
+        </div>
+        <div class="acts"><button class="sec mini" onclick="printTest()">Print alignment test</button></div>
         <div id="lblLots"></div>
       </div>
     </section>
@@ -865,10 +882,24 @@ function printLot(lotId){ toast('Preparing labels…');
     var boxes=r.boxes.filter(function(b){ return b.status!=='Void'; }); printLabels(boxes,$('lblLayout').value); }).catch(function(e){ toast(e.message); });
 }
 function qrSvg(text){ var q=qrcode(0,'M'); q.addData(text); q.make(); return q.createSvgTag({cellSize:2,margin:0,scalable:true}); }
-function labelHtml(boxes,layout){
-  var L={a4_21v:{w:70,h:42.42,cols:3,top:0,left:0,gx:0,gy:0,page:'A4',pad:4.5},a4_24:{w:70,h:37.1,cols:3,top:0,left:0,gx:0,gy:0,page:'A4'},a4_21:{w:63.5,h:38.1,cols:3,top:15.15,left:7.25,gx:2.54,gy:0,page:'A4'},th_50:{w:50,h:25,cols:1,top:0,left:0,gx:0,gy:0,page:'50mm 25mm'}}[layout];
-  var perPage=layout==='th_50'?1:(layout==='a4_21'||layout==='a4_21v')?21:24, small=layout==='th_50', pad=L.pad||(small?1.5:3), qr=Math.min(L.h-2*pad,30);
-  var css='@page{size:'+L.page+';margin:0}*{box-sizing:border-box}body{margin:0;font-family:Arial,Helvetica,sans-serif;color:#0a1a3a}'+
+var LC_DEF={top:0,left:0,w:70,h:42.4,gx:0,gy:0,cols:3,rows:7};
+function lcGet(){ var c={}, o={}; try{ c=JSON.parse(localStorage.getItem('lblCustom')||'{}'); }catch(e){}
+  Object.keys(LC_DEF).forEach(function(k){ var v=parseFloat(c[k]); o[k]=isFinite(v)&&v>=0?v:LC_DEF[k]; });
+  o.cols=Math.max(1,Math.round(o.cols)); o.rows=Math.max(1,Math.round(o.rows)); if(!o.w) o.w=LC_DEF.w; if(!o.h) o.h=LC_DEF.h; return o; }
+function lcSave(){ var c={}; Object.keys(LC_DEF).forEach(function(k){ c[k]=$('lc_'+k).value; }); try{ localStorage.setItem('lblCustom',JSON.stringify(c)); }catch(e){} }
+function lcFill(){ var c=lcGet(); Object.keys(LC_DEF).forEach(function(k){ var el=$('lc_'+k); if(el){ el.value=c[k]; el.oninput=lcSave; } }); }
+function lblChanged(){ var v=$('lblLayout').value; try{ localStorage.setItem('lblLayout',v); }catch(e){} $('lblCust').hidden=v!=='a4_custom'; if(v==='a4_custom') lcFill(); }
+function lblLayoutOf(layout){
+  if(layout==='a4_custom'){ var c=lcGet(); return {w:c.w,h:c.h,cols:c.cols,rows:c.rows,top:c.top,left:c.left,gx:c.gx,gy:c.gy,page:'A4',pad:3}; }
+  return {a4_21v:{w:70,h:42.42,cols:3,rows:7,top:0,left:0,gx:0,gy:0,page:'A4',pad:4.5},a4_24:{w:70,h:37.1,cols:3,rows:8,top:0,left:0,gx:0,gy:0,page:'A4'},a4_21:{w:63.5,h:38.1,cols:3,rows:7,top:15.15,left:7.25,gx:2.54,gy:0,page:'A4'},th_50:{w:50,h:25,cols:1,rows:1,top:0,left:0,gx:0,gy:0,page:'50mm 25mm'}}[layout]||null;
+}
+function printTest(){ var lay=$('lblLayout').value, L=lblLayoutOf(lay), b=[];
+  for(var i=1;i<=L.cols*L.rows;i++) b.push({id:'TEST'+('0'+i).slice(-2),product:'Alignment test',shade:'Sticker '+i,pcs:'-',batch:'',expiry:''});
+  needQrLib().then(function(){ printLabels(b,lay,true); }).catch(function(e){ toast(e.message||'Could not load the QR maker'); }); }
+function labelHtml(boxes,layout,test){
+  var L=lblLayoutOf(layout)||lblLayoutOf('a4_21v');
+  var perPage=L.cols*L.rows, small=layout==='th_50', pad=L.pad||(small?1.5:3), qr=Math.max(5,Math.min(L.h-2*pad,L.w*0.45,30));
+  var css='@page{size:'+L.page+';margin:0}*{box-sizing:border-box}body{margin:0;font-family:Arial,Helvetica,sans-serif;color:#0a1a3a}'+(test?'.lb{outline:.25mm dashed #888;outline-offset:-.125mm}':'')+
     '.pg{width:'+(layout==='th_50'?'50mm':'210mm')+';height:'+(layout==='th_50'?'25mm':'297mm')+';padding:'+L.top+'mm 0 0 '+L.left+'mm;page-break-after:always;display:grid;grid-template-columns:repeat('+L.cols+','+L.w+'mm);column-gap:'+L.gx+'mm;row-gap:'+L.gy+'mm;grid-auto-rows:'+L.h+'mm;overflow:hidden}'+
     '.lb{display:flex;align-items:center;gap:'+(small?'1.5':'2.5')+'mm;padding:'+pad+'mm;overflow:hidden}.lb .q{width:'+qr+'mm;height:'+qr+'mm;flex:0 0 '+qr+'mm}.lb .q svg{width:100%;height:100%}'+
     '.lb .t{flex:1;min-width:0;line-height:1.15}.br{font-size:'+(small?'5':'6')+'pt;font-weight:700;letter-spacing:.06em;color:#0a2a66}.br b{color:#e9831a}'+
@@ -881,9 +912,9 @@ function labelHtml(boxes,layout){
     if(cur.length===perPage||i===boxes.length-1){ pages.push('<div class="pg">'+cur.join('')+'</div>'); cur=[]; } });
   return {css:css, body:pages.join(''), doc:'<!DOCTYPE html><html><head><meta charset="utf-8"><title>Box labels</title><style>'+css+'</style></head><body>'+pages.join('')+'</body></html>'};
 }
-function printLabels(boxes,layout){
+function printLabels(boxes,layout,test){
   if(!boxes.length){ toast('No labels to print'); return; }
-  var h=labelHtml(boxes,layout), w=null;
+  var h=labelHtml(boxes,layout,test), w=null;
   try{ w=window.open('','_blank'); }catch(e){}
   if(w){ w.document.open(); w.document.write(h.doc); w.document.close(); setTimeout(function(){ try{ w.focus(); w.print(); }catch(e){} },500); return; }
   // pop-ups blocked: print from this page
@@ -972,6 +1003,6 @@ function drawOwners(){ var q=$('oSearch').value.trim().toLowerCase(), sellers=C.
       sellers.map(function(u){ return '<option value="'+esc(u.username)+'"'+(u.username===c.owner?' selected':'')+'>'+esc(u.name)+'</option>'; }).join('')+'</select></td></tr>'; }).join('');
   [].forEach.call($('oBody').querySelectorAll('.ow'),function(s){ s.onchange=function(){ var c=C.team.customers[+s.getAttribute('data-i')];
     call('CRM_assignOwner',c.name,s.value).then(function(r){ if(!r.ok){ toast(r.msg); return; } c.owner=s.value; B.customers.forEach(function(x){ if(x.name===c.name) x.owner=s.value; }); toast('Saved: '+c.name); }).catch(function(e){ toast(e.message); }); }; }); }
-(function(){ try{ var v=localStorage.getItem('lblLayout'), el=$('lblLayout'); if(v&&el&&el.querySelector('option[value="'+v+'"]')) el.value=v; }catch(e){} })();
+(function(){ try{ var v=localStorage.getItem('lblLayout'), el=$('lblLayout'); if(v&&el&&el.querySelector('option[value="'+v+'"]')) el.value=v; lblChanged(); }catch(e){} })();
 </script>
 </body></html>
