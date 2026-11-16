@@ -809,7 +809,7 @@ function loadLoading(force){
 function drawOrders(){ var o=C.loading.orders;
   $('ldOrders').innerHTML=o.length?o.map(function(p,i){ var need=0,got=0; p.lines.forEach(function(l){ need+=l.boxes; got+=l.scanned; });
     return '<div class="item"><div style="display:flex;justify-content:space-between;gap:8px"><span class="t">'+esc(p.customer)+'</span><span class="badge '+(got>=need&&need?'b-won':got?'b-pend':'b-blue')+'">'+got+' / '+need+' boxes</span></div>'+
-      '<div class="sub">'+(p.slip?'Dispatch slip ':'')+esc(p.piNo)+' · '+esc(p.date)+(p.invoice?' · billed '+esc(p.invoice):'')+(p.notes?' · '+esc(p.notes):'')+'</div><div class="sub" style="margin-top:4px">'+p.lines.map(function(l){ return l.boxes+' × '+esc(l.product+' '+l.shade)+(l.loose?' + '+l.loose+' pcs loose':''); }).join('<br>')+'</div>'+
+      '<div class="sub">'+(p.slip?'Dispatch slip ':'')+esc(p.piNo)+' · '+esc(p.date)+(p.invoice?' · billed '+esc(p.invoice):'')+(p.notes?' · '+esc(p.notes):'')+'</div><div class="sub" style="margin-top:4px">'+p.lines.map(function(l){ return l.boxes+' × '+esc(l.product+' '+l.shade)+(l.batch?' · batch '+esc(l.batch)+(l.expiry?' (exp '+esc(fmtYmd(l.expiry))+')':''):'')+(l.loose?' + '+l.loose+' pcs loose':''); }).join('<br>')+'</div>'+
       '<div class="acts"><button class="mini ldgo" data-i="'+i+'">Start loading</button>'+(p.slip?'<button class="mini sec dsprn" data-s="'+esc(p.piNo)+'">Print slip</button>'+(ME.perms.dispatch&&!got?'<button class="mini sec dsx" data-s="'+esc(p.piNo)+'">Cancel slip</button>':''):'')+'</div></div>'; }).join(''):'<div class="empty" style="margin-top:10px">No PIs or dispatch slips waiting to load.</div>';
   [].forEach.call($('ldOrders').querySelectorAll('.ldgo'),function(b){ b.onclick=function(){ ldOpen(C.loading.orders[+b.getAttribute('data-i')]); }; });
   [].forEach.call($('ldOrders').querySelectorAll('.dsprn'),function(b){ b.onclick=function(){ dsPrintNo(b.getAttribute('data-s')); }; });
@@ -820,18 +820,18 @@ function ldOpen(order){
   $('ldPick').hidden=true; $('ldWork').hidden=false;
   var inStock={}; (C.loading.stock||[]).forEach(function(s){ inStock[s[0]]={product:s[1],shade:s[2],batch:s[3],exp:s[4]}; });
   LD={order:order, inStock:inStock, loaded:{}, need:{}};
-  order.lines.forEach(function(l){ LD.need[l.product+'|'+l.shade]={n:l.boxes,d:l.scanned}; });
+  order.lines.forEach(function(l){ var k=l.product+'|'+l.shade+(l.batch?'|'+l.batch:''); if(LD.need[k]){ LD.need[k].n+=l.boxes; LD.need[k].d+=l.scanned; } else LD.need[k]={n:l.boxes,d:l.scanned}; });
   $('ldTitle').textContent=order.free?order.free:order.customer+' · '+order.piNo;
   $('rcScanCard').innerHTML=''; $('ldScanCard').innerHTML=scannerHtml('ld')+'<div class="acts" style="margin-top:12px"><button class="sec" onclick="ldUndoOpen()">Undo a scan</button></div>'; ldDraw(); SCAN_CB=ldScan;
   LD.q=makeQueue(function(ids){ return call('CRM_scanOut',order.piNo,ids,order.free||'').then(function(res){ if(!res.ok) throw new Error(res.msg);
-    res.results.forEach(function(x){ if(x.ok) setScanRow(x.id,'ok',x.result); else { var b=LD.loaded[x.id]; if(b){ delete LD.loaded[x.id]; LD.inStock[x.id]=b; var n=LD.need[b.product+'|'+b.shade]; if(n) n.d--; } setScanRow(x.id,'err',x.result); banner('err',x.id+': '+x.result); beep('err'); } });
+    res.results.forEach(function(x){ if(x.ok) setScanRow(x.id,'ok',x.result); else { var b=LD.loaded[x.id]; if(b){ delete LD.loaded[x.id]; LD.inStock[x.id]=b; var n=LD.need[b.product+'|'+b.shade+'|'+b.batch]||LD.need[b.product+'|'+b.shade]; if(n) n.d--; } setScanRow(x.id,'err',x.result); banner('err',x.id+': '+x.result); beep('err'); } });
     ldDraw(); delete C.loading; }); });
 }
 function ldDraw(){ var keys=Object.keys(LD.need), done=0, tot=0;
   keys.forEach(function(k){ done+=Math.min(LD.need[k].d,LD.need[k].n); tot+=LD.need[k].n; });
   $('ldProg').innerHTML=LD.order.free?'<div class="pl"><b>Boxes scanned</b><b>'+Object.keys(LD.loaded).length+'</b></div>':
     '<div class="pl"><b>All boxes</b><b>'+done+' / '+tot+'</b></div><div class="pb"><i class="'+(done>=tot?'done':'')+'" style="width:'+(tot?done/tot*100:0)+'%"></i></div>'+
-    keys.map(function(k){ var n=LD.need[k]; return '<div class="pl"><span>'+esc(k.replace('|',' · '))+'</span><span>'+n.d+' / '+n.n+'</span></div><div class="pb"><i class="'+(n.d>=n.n?'done':'')+'" style="width:'+Math.min(100,n.d/n.n*100)+'%"></i></div>'; }).join('')+
+    keys.map(function(k){ var n=LD.need[k]; return '<div class="pl"><span>'+esc(k.split('|').map(function(x,j){ return j===2?'batch '+x:x; }).join(' · '))+'</span><span>'+n.d+' / '+n.n+'</span></div><div class="pb"><i class="'+(n.d>=n.n?'done':'')+'" style="width:'+Math.min(100,n.d/n.n*100)+'%"></i></div>'; }).join('')+
     (tot&&done>=tot?'<div class="msg ok">All boxes loaded. The office can now bill and record the dispatch.</div>':'');
   var c=$('ldCnt'); if(c) c.textContent=LD.order.free?'':done+' of '+tot+' loaded';
 }
@@ -839,13 +839,15 @@ function ldScan(id){
   if(LD.loaded[id]){ banner('warn',id+' already loaded'); beep('warn'); return; }
   var b=LD.inStock[id];
   if(!b){ banner('err',id+' is not in stock (not scanned in, or already gone)'); beep('err'); addScanRow(id,'err','Not in stock'); return; }
-  var k=b.product+'|'+b.shade, n=LD.need[k];
+  var k=b.product+'|'+b.shade, kb=k+'|'+b.batch, fixed=!!LD.need[kb], n=LD.need[kb]||LD.need[k];
   if(!LD.order.free){
-    if(!n){ banner('err','Wrong item: '+b.product+' '+b.shade+' is not on this order'); beep('err'); addScanRow(id,'err','Not on this order'); return; }
+    if(!n){ var want=Object.keys(LD.need).filter(function(x){ return x.indexOf(k+'|')===0; }).map(function(x){ return x.split('|')[2]; });
+      if(want.length){ banner('err','Wrong batch '+(b.batch||'-')+'. This slip wants batch '+want.join(' / ')); beep('err'); addScanRow(id,'err','Wrong batch'); return; }
+      banner('err','Wrong item: '+b.product+' '+b.shade+' is not on this order'); beep('err'); addScanRow(id,'err','Not on this order'); return; }
     if(n.d>=n.n){ banner('err','Enough '+b.product+' '+b.shade+' already loaded'); beep('err'); addScanRow(id,'err','Extra box'); return; }
   }
   // oldest expiry first
-  var older=null; Object.keys(LD.inStock).forEach(function(o){ var x=LD.inStock[o]; if(o!==id&&x.product===b.product&&x.shade===b.shade&&x.exp&&b.exp&&x.exp<b.exp&&(!older||x.exp<older.exp)) older=x; });
+  var older=null; if(!fixed) Object.keys(LD.inStock).forEach(function(o){ var x=LD.inStock[o]; if(o!==id&&x.product===b.product&&x.shade===b.shade&&x.exp&&b.exp&&x.exp<b.exp&&(!older||x.exp<older.exp)) older=x; });
   delete LD.inStock[id]; LD.loaded[id]=b; if(n) n.d++;
   LD.q.push(id); addScanRow(id,'q',b.product+' '+b.shade+(b.batch?' · '+b.batch:''));
   if(older){ banner('warn','Loaded, but an older batch ('+(older.batch||'?')+', expires '+fmtYmd(older.exp)+') is still in the godown. Send older stock first.'); beep('warn'); }
@@ -854,40 +856,86 @@ function ldScan(id){
 }
 /* ---------------- DISPATCH SLIPS (office: an order to load when there is no PI) ---------------- */
 function dsOpen(){
+  if(!C.loading||!C.loading.stock){ toast('Loading stock…'); loadLoading(true).then(function(){ if(C.loading) dsOpen(); }); return; }
   var names=(B.customers||[]).map(function(c){ return '<option value="'+esc(c.name)+'">'; }).join('');
-  openModal('<h2>New dispatch slip</h2><div class="sub">For goods going out without a PI. The godown loads against it and the CRM checks every box.</div>'+
-    '<label>Going to (customer) *</label><input id="dsCust" list="dsCustList" placeholder="e.g. Sanjay Enterprise"><datalist id="dsCustList">'+names+'</datalist>'+
+  openModal('<h2>New dispatch slip</h2><div class="sub">For goods going out without a PI. Batches are suggested oldest first; tick the ones to send. The godown must load exactly those.</div>'+
+    '<label>Billing name (customer) *</label><input id="dsCust" list="dsCustList" placeholder="e.g. Sreekala Trade Links" onchange="dsRates()"><datalist id="dsCustList">'+names+'</datalist>'+
+    '<div class="row"><div><label>Delivery address</label><input id="dsAddr" placeholder="e.g. Ernakulam"></div><div><label>Reference</label><input id="dsRef" placeholder="e.g. Pandiyan"></div></div>'+
+    '<div class="row"><div><label>Challan no.</label><input id="dsChallan" placeholder="optional"></div><div><label>Vehicle</label><input id="dsVeh" placeholder="optional"></div></div>'+
     '<div id="dsLines"></div><div style="margin-top:8px"><button class="sec mini" onclick="dsAdd()">+ Add product</button></div>'+
-    '<label>Notes (vehicle, invoice no., anything for the godown)</label><input id="dsNotes">'+
+    '<label>Notes for the godown</label><input id="dsNotes">'+
     '<div class="acts"><button onclick="dsSave()">Create and print slip</button><button class="sec" onclick="closeModal()">Cancel</button></div><div id="dsMsg"></div>');
   dsAdd(); setTimeout(function(){ $('dsCust').focus(); },50);
 }
+function dsBatches(product,shade){ var m={};
+  (C.loading.stock||[]).forEach(function(s){ if(s[1]===product&&s[2]===shade){ var k=s[3]||''; (m[k]=m[k]||{batch:k,exp:s[4]||'',n:0}).n++; } });
+  return Object.keys(m).map(function(k){ return m[k]; }).sort(function(a,b){ return (a.exp||'9999')<(b.exp||'9999')?-1:(a.exp||'9999')>(b.exp||'9999')?1:0; }); }
+function dsRateFor(product,shade){ var c=(B.customers||[]).filter(function(x){ return x.name===$('dsCust').value.trim(); })[0], k=product+'|'+shade;
+  var lv=c&&B.levels&&B.levels[c.level], v=lv&&lv.hasOwnProperty(k)?lv[k]:null; if(v>0) return v;
+  var x=prod(product), sh=x&&x.shades.filter(function(z){ return z.shade===shade; })[0]; return sh&&sh.rate?sh.rate:''; }
+function dsRates(){ [].forEach.call($('dsLines').querySelectorAll('.line'),function(d){ var p=d.querySelector('.p').value, sh=d.querySelector('.s').value, r=d.querySelector('.r'); if(p&&sh&&!r.dataset.typed) r.value=dsRateFor(p,sh); }); }
 function dsAdd(){ var d=document.createElement('div'); d.className='line';
   d.innerHTML='<div class="grid"><div><label>Product</label><select class="p">'+prodOptions()+'</select></div><div><label>Shade</label><select class="s"><option value=""></option></select></div></div>'+
-    '<div class="grid2"><div><label>Boxes</label><input class="b" type="number" min="1" inputmode="numeric"></div><div style="align-self:end;text-align:right"><button class="mini sec x">✕</button></div></div>';
+    '<div class="grid2"><div><label>Boxes</label><input class="b" type="number" min="1" inputmode="numeric"></div><div><label>Rate (₹/pc)</label><input class="r" type="number" min="0" step="0.01" inputmode="decimal"></div><div style="align-self:end;text-align:right"><button class="mini sec x">✕</button></div></div>'+
+    '<div class="bt"></div>';
   $('dsLines').appendChild(d);
-  var ps=d.querySelector('.p'); ps.onchange=function(){ var x=prod(ps.value); d.querySelector('.s').innerHTML='<option value=""></option>'+(x?x.shades.map(function(s){ return '<option>'+esc(s.shade)+'</option>'; }).join(''):''); };
+  var ps=d.querySelector('.p'), ss=d.querySelector('.s'), bx=d.querySelector('.b'), rt=d.querySelector('.r');
+  ps.onchange=function(){ var x=prod(ps.value); ss.innerHTML='<option value=""></option>'+(x?x.shades.map(function(s){ return '<option>'+esc(s.shade)+'</option>'; }).join(''):''); dsSuggest(d); };
+  ss.onchange=function(){ if(!rt.dataset.typed) rt.value=dsRateFor(ps.value,ss.value); dsSuggest(d); };
+  bx.oninput=function(){ dsSuggest(d); };
+  rt.oninput=function(){ rt.dataset.typed='1'; };
   d.querySelector('.x').onclick=function(){ d.remove(); };
 }
+function dsSuggest(d){ var p=d.querySelector('.p').value, sh=d.querySelector('.s').value, want=Math.floor(+d.querySelector('.b').value||0), box=d.querySelector('.bt');
+  if(!p||!sh){ box.innerHTML=''; return; }
+  var bs=dsBatches(p,sh);
+  if(!bs.length){ box.innerHTML='<div class="sub" style="margin-top:6px">No scanned-in boxes of this item yet, so the godown can load any batch.</div>'; return; }
+  var left=want;
+  box.innerHTML='<div class="sub" style="margin:8px 0 4px">Batches in stock, oldest first. Tick what to send:</div>'+bs.map(function(b){ var take=Math.min(b.n,Math.max(left,0)); left-=take;
+    return '<label class="bk" style="display:flex;align-items:center;gap:8px;margin:4px 0;font-weight:400"><input type="checkbox" class="bc" style="width:auto"'+(take?' checked':'')+'>'+
+      '<span style="flex:1">Batch <b>'+esc(b.batch||'-')+'</b>'+(b.exp?' · exp '+esc(fmtYmd(b.exp)):'')+' · '+b.n+' in stock</span>'+
+      '<input class="bn" type="number" min="0" max="'+b.n+'" value="'+take+'" data-batch="'+esc(b.batch)+'" data-max="'+b.n+'" style="width:72px"></label>'; }).join('')+
+    '<div class="sub bsum"></div>';
+  var sum=function(){ var t=0; [].forEach.call(box.querySelectorAll('.bn'),function(i){ t+=+i.value||0; }); var el=box.querySelector('.bsum');
+    el.innerHTML='Ticked: <b>'+t+'</b> box(es)'+(want&&t!==want?' <span style="color:#b42318">· boxes asked: '+want+'</span>':''); };
+  [].forEach.call(box.querySelectorAll('.bk'),function(l){ var c=l.querySelector('.bc'), n=l.querySelector('.bn');
+    c.onchange=function(){ if(c.checked&&!(+n.value)){ var t=0; [].forEach.call(box.querySelectorAll('.bn'),function(i){ t+=+i.value||0; }); n.value=Math.min(+n.dataset.max,Math.max(want-t,1)); } if(!c.checked) n.value=0; sum(); };
+    n.oninput=function(){ var v=Math.max(0,Math.min(+n.dataset.max,Math.floor(+n.value||0))); if(String(v)!==n.value) n.value=v; c.checked=v>0; sum(); }; });
+  sum();
+}
 function dsSave(){
-  var p={ customer:$('dsCust').value.trim(), notes:$('dsNotes').value.trim(),
-    lines:[].map.call($('dsLines').querySelectorAll('.line'),function(d){ return { product:d.querySelector('.p').value, shade:d.querySelector('.s').value, boxes:d.querySelector('.b').value }; }) };
+  var bad=null;
+  var p={ customer:$('dsCust').value.trim(), notes:$('dsNotes').value.trim(), address:$('dsAddr').value.trim(), reference:$('dsRef').value.trim(), challan:$('dsChallan').value.trim(), vehicle:$('dsVeh').value.trim(),
+    lines:[].map.call($('dsLines').querySelectorAll('.line'),function(d,i){ var picks=[].map.call(d.querySelectorAll('.bn'),function(n){ return {batch:n.dataset.batch, boxes:+n.value||0}; }).filter(function(x){ return x.boxes>0; });
+      var want=Math.floor(+d.querySelector('.b').value||0), got=picks.reduce(function(a,x){ return a+x.boxes; },0);
+      if(d.querySelector('.bn')&&!got) bad='Line '+(i+1)+': tick at least one batch.';
+      else if(picks.length&&want&&got!==want) bad='Line '+(i+1)+': '+want+' boxes asked but '+got+' ticked.';
+      return { product:d.querySelector('.p').value, shade:d.querySelector('.s').value, boxes:want||got, rate:d.querySelector('.r').value, picks:picks }; }) };
+  if(bad){ msg('dsMsg',esc(bad)); return; }
   msg('dsMsg','Saving…','warn');
   call('CRM_saveSlip',p).then(function(r){ if(!r.ok){ msg('dsMsg',esc(r.msg)); return; } closeModal(); toast(r.slip.slipNo+' created'); dsPrint(r.slip); loadLoading(true); }).catch(fail('dsMsg'));
 }
 function dsPrintNo(no){ call('CRM_getSlip',no).then(function(r){ if(r.ok) dsPrint(r.slip); else toast(r.msg); }).catch(function(e){ toast(e.message); }); }
+function dsInr(n){ return '₹'+Math.round(n).toLocaleString('en-IN'); }
 function dsPrint(sl){
-  var rows=sl.lines.map(function(l,i){ return '<tr><td>'+(i+1)+'</td><td>'+esc(l.product)+'</td><td>'+esc(l.shade)+'</td><td class="n">'+l.boxes+'</td><td></td></tr>'; }).join('');
-  var tot=sl.lines.reduce(function(a,l){ return a+l.boxes; },0);
-  var doc='<!DOCTYPE html><html><head><meta charset="utf-8"><title>'+esc(sl.slipNo)+'</title><style>@page{size:A5;margin:10mm}body{font-family:Arial,Helvetica,sans-serif;color:#0a1a3a;font-size:11pt;margin:0}'+
-    'h1{font-size:15pt;margin:0;letter-spacing:.04em}h1 b{color:#e9831a}.top{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:2px solid #0a2a66;padding-bottom:6px}'+
-    '.k{color:#555;font-size:9pt}.big{font-size:13pt;font-weight:700}table{width:100%;border-collapse:collapse;margin-top:10px}th,td{border:1px solid #9aa7bd;padding:6px;text-align:left;font-size:10pt}th{background:#eef2f8}.n{text-align:right;font-weight:700}'+
-    '.sig{display:flex;gap:16px;margin-top:34px}.sig div{flex:1;border-top:1px solid #333;padding-top:4px;font-size:9pt;color:#444}</style></head><body>'+
+  var n=0, totB=0, totP=0, totA=0, rows='';
+  sl.lines.forEach(function(l){ var pcsBox=l.pcsBox||24, parts=(l.picks&&l.picks.length)?l.picks:[{batch:'',expiry:'',boxes:l.boxes}];
+    if(!(l.picks&&l.picks.length)&&sl.loaded){ var ld=sl.loaded.filter(function(x){ return x.product===l.product&&x.shade===l.shade; }); if(ld.length) parts=ld; }
+    parts.forEach(function(pt){ n++; var pcs=pt.boxes*pcsBox, amt=l.rate?pcs*l.rate:0; totB+=pt.boxes; totP+=pcs; totA+=amt;
+      rows+='<tr><td>'+n+'</td><td>'+esc(l.product)+'</td><td>'+esc(l.shade)+'</td><td>'+esc(pt.batch||'oldest first')+'</td><td>'+(pt.expiry?esc(fmtYmd(pt.expiry)):'')+'</td><td class="n">'+pt.boxes+'</td><td class="n">'+pcs+'</td><td class="n">'+(l.rate?l.rate:'')+'</td><td class="n">'+(amt?dsInr(amt):'')+'</td></tr>'; }); });
+  var doc='<!DOCTYPE html><html><head><meta charset="utf-8"><title>'+esc(sl.slipNo)+'</title><style>@page{size:A4 landscape;margin:10mm}body{font-family:Arial,Helvetica,sans-serif;color:#0a1a3a;font-size:10.5pt;margin:0}'+
+    'h1{font-size:16pt;margin:0;letter-spacing:.04em}h1 b{color:#e9831a}.top{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:2px solid #0a2a66;padding-bottom:6px}'+
+    '.k{color:#555;font-size:8.5pt}.big{font-size:13pt;font-weight:700}.meta{display:grid;grid-template-columns:1.3fr 1fr 1fr 1fr;gap:6px 14px;margin-top:8px}'+
+    'table{width:100%;border-collapse:collapse;margin-top:10px}th,td{border:1px solid #9aa7bd;padding:5px 6px;text-align:left;font-size:9.5pt}th{background:#eef2f8}.n{text-align:right}tfoot td{font-weight:700}'+
+    '.sig{display:flex;gap:16px;margin-top:28px}.sig div{flex:1;border-top:1px solid #333;padding-top:4px;font-size:8.5pt;color:#444}</style></head><body>'+
     '<div class="top"><div><h1>EUROBOND <b>SEALANT</b></h1><div class="k">Euro Sealant Private Limited · Puzhal, Chennai</div></div><div style="text-align:right"><div class="k">DISPATCH SLIP</div><div class="big">'+esc(sl.slipNo)+'</div><div class="k">'+esc(fmtYmd((sl.createdAt||'').slice(0,10)))+'</div></div></div>'+
-    '<div style="margin-top:10px"><span class="k">To</span><div class="big">'+esc(sl.customer)+'</div></div>'+(sl.notes?'<div style="margin-top:6px"><span class="k">Notes</span><div>'+esc(sl.notes)+'</div></div>':'')+
-    '<table><thead><tr><th>#</th><th>Product</th><th>Shade</th><th class="n">Boxes</th><th>Loaded ✓</th></tr></thead><tbody>'+rows+'<tr><td></td><td colspan="2"><b>Total</b></td><td class="n">'+tot+'</td><td></td></tr></tbody></table>'+
-    '<div class="k" style="margin-top:8px">Scan every box in the CRM under Load → '+esc(sl.slipNo)+'. Prepared by '+esc(sl.createdBy||'')+'.</div>'+
-    '<div class="sig"><div>Prepared by</div><div>Loaded by</div><div>Driver / received by</div></div></body></html>';
+    '<div class="meta"><div><span class="k">Billing name</span><div class="big">'+esc(sl.customer)+'</div></div><div><span class="k">Delivery address</span><div>'+esc(sl.address||'')+'</div></div>'+
+    '<div><span class="k">Reference</span><div>'+esc(sl.reference||'')+'</div></div><div><span class="k">Challan no.</span><div>'+esc(sl.challan||'')+'</div></div></div>'+
+    (sl.notes?'<div style="margin-top:6px"><span class="k">Notes</span> '+esc(sl.notes)+'</div>':'')+
+    '<table><thead><tr><th>#</th><th>Product</th><th>Shade</th><th>Batch</th><th>Expiry</th><th class="n">Boxes</th><th class="n">Pcs</th><th class="n">Rate</th><th class="n">Amount</th></tr></thead><tbody>'+rows+'</tbody>'+
+    '<tfoot><tr><td></td><td colspan="4">Total (before GST)</td><td class="n">'+totB+'</td><td class="n">'+totP+'</td><td></td><td class="n">'+(totA?dsInr(totA):'')+'</td></tr></tfoot></table>'+
+    '<div class="k" style="margin-top:6px">Load in the CRM under Load → '+esc(sl.slipNo)+'. Every box is scanned; a wrong item or batch is refused.</div>'+
+    '<div class="sig"><div>Issued by: '+esc(sl.createdBy||'')+'</div><div>Time</div><div>Vehicle: '+esc(sl.vehicle||'')+'</div><div>Loading person</div><div>Driver / received by</div></div></body></html>';
   var w=null; try{ w=window.open('','_blank'); }catch(e){}
   if(w){ w.document.open(); w.document.write(doc); w.document.close(); setTimeout(function(){ try{ w.focus(); w.print(); }catch(e){} },400); }
   else toast('Allow pop-ups for this site to print the slip');
@@ -897,7 +945,7 @@ function dsCancel(no){ if(!window.confirm('Cancel '+no+'? The godown will no lon
 function ldBack(){ stopCam(); SCAN_CB=null; LD=null; $('ldScanCard').innerHTML=''; $('ldWork').hidden=true; $('ldPick').hidden=false; loadLoading(true); }
 function ldUndoOpen(){ openModal('<h2>Undo a loaded box</h2><div class="sub">Scan or type the box that should not be on the truck.</div><label>Box</label><input id="undoId" placeholder="ES000123"><div class="acts"><button onclick="ldUndo()">Take it off</button><button class="sec" onclick="closeModal()">Cancel</button></div><div id="undoMsg"></div>'); }
 function ldUndo(){ var id=normCode($('undoId').value);
-  call('CRM_boxAction',id,'undo-out','').then(function(r){ if(!r.ok){ msg('undoMsg',esc(r.msg)); return; } var b=LD&&LD.loaded[id]; if(b){ delete LD.loaded[id]; LD.inStock[id]=b; var n=LD.need[b.product+'|'+b.shade]; if(n) n.d--; ldDraw(); }
+  call('CRM_boxAction',id,'undo-out','').then(function(r){ if(!r.ok){ msg('undoMsg',esc(r.msg)); return; } var b=LD&&LD.loaded[id]; if(b){ delete LD.loaded[id]; LD.inStock[id]=b; var n=LD.need[b.product+'|'+b.shade+'|'+b.batch]||LD.need[b.product+'|'+b.shade]; if(n) n.d--; ldDraw(); }
     var d=$('sr-'+id); if(d) d.remove(); closeModal(); toast(id+' is back in stock'); }).catch(fail('undoMsg')); }
 
 /* ---------------- LABELS ---------------- */
