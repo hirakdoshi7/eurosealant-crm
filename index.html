@@ -266,8 +266,8 @@ th{color:var(--grey);font-size:11px;text-transform:uppercase;letter-spacing:.04e
     <!-- LOAD -->
     <section id="t-load" hidden>
       <div class="card" id="ldPick">
-        <div class="hrow"><h2>Load a truck</h2><button class="mini sec" onclick="loadLoading(true)">Refresh</button></div>
-        <div class="sub">Pick the order, then scan every box as it goes on the truck. Wrong shade or extra boxes are stopped, and older batches are flagged to go first.</div>
+        <div class="hrow"><h2>Load a truck</h2><span><button class="mini" id="dsNewBtn" hidden onclick="dsOpen()">+ Dispatch slip</button> <button class="mini sec" onclick="loadLoading(true)">Refresh</button></span></div>
+        <div class="sub">Pick the order (a PI or a dispatch slip), then scan every box as it goes on the truck. Wrong shade or extra boxes are stopped, and older batches are flagged to go first.</div>
         <div id="ldOrders"></div>
         <h3>Not for an order</h3>
         <div class="row" style="align-items:flex-end"><div style="flex:3"><input id="ldFree" placeholder="e.g. Sample to Ajay Enterprises, return to Adarsha"></div><div style="flex:0 0 auto"><button class="sec" onclick="ldStartFree()">Start</button></div></div>
@@ -802,15 +802,18 @@ function rcFinish(){ if(RC.q.size()){ toast('Still saving scans… try again in 
 /* ---------------- LOAD ---------------- */
 var LD=null;
 function loadLoading(force){
+  var nb=$('dsNewBtn'); if(nb) nb.hidden=!(ME&&ME.perms&&ME.perms.dispatch);
   if(C.loading&&!force) drawOrders(); else $('ldOrders').innerHTML='<div class="skel"></div><div class="skel"></div>';
   return call('CRM_loadingList').then(function(r){ if(!r.ok){ toast(r.msg); return; } C.loading=r; drawOrders(); }).catch(function(e){ toast(e.message); });
 }
 function drawOrders(){ var o=C.loading.orders;
   $('ldOrders').innerHTML=o.length?o.map(function(p,i){ var need=0,got=0; p.lines.forEach(function(l){ need+=l.boxes; got+=l.scanned; });
     return '<div class="item"><div style="display:flex;justify-content:space-between;gap:8px"><span class="t">'+esc(p.customer)+'</span><span class="badge '+(got>=need&&need?'b-won':got?'b-pend':'b-blue')+'">'+got+' / '+need+' boxes</span></div>'+
-      '<div class="sub">'+esc(p.piNo)+' · '+esc(p.date)+(p.invoice?' · billed '+esc(p.invoice):'')+'</div><div class="sub" style="margin-top:4px">'+p.lines.map(function(l){ return l.boxes+' × '+esc(l.product+' '+l.shade)+(l.loose?' + '+l.loose+' pcs loose':''); }).join('<br>')+'</div>'+
-      '<div class="acts"><button class="mini ldgo" data-i="'+i+'">Start loading</button></div></div>'; }).join(''):'<div class="empty" style="margin-top:10px">No approved orders waiting to load.</div>';
+      '<div class="sub">'+(p.slip?'Dispatch slip ':'')+esc(p.piNo)+' · '+esc(p.date)+(p.invoice?' · billed '+esc(p.invoice):'')+(p.notes?' · '+esc(p.notes):'')+'</div><div class="sub" style="margin-top:4px">'+p.lines.map(function(l){ return l.boxes+' × '+esc(l.product+' '+l.shade)+(l.loose?' + '+l.loose+' pcs loose':''); }).join('<br>')+'</div>'+
+      '<div class="acts"><button class="mini ldgo" data-i="'+i+'">Start loading</button>'+(p.slip?'<button class="mini sec dsprn" data-s="'+esc(p.piNo)+'">Print slip</button>'+(ME.perms.dispatch&&!got?'<button class="mini sec dsx" data-s="'+esc(p.piNo)+'">Cancel slip</button>':''):'')+'</div></div>'; }).join(''):'<div class="empty" style="margin-top:10px">No PIs or dispatch slips waiting to load.</div>';
   [].forEach.call($('ldOrders').querySelectorAll('.ldgo'),function(b){ b.onclick=function(){ ldOpen(C.loading.orders[+b.getAttribute('data-i')]); }; });
+  [].forEach.call($('ldOrders').querySelectorAll('.dsprn'),function(b){ b.onclick=function(){ dsPrintNo(b.getAttribute('data-s')); }; });
+  [].forEach.call($('ldOrders').querySelectorAll('.dsx'),function(b){ b.onclick=function(){ dsCancel(b.getAttribute('data-s')); }; });
 }
 function ldStartFree(){ var r=$('ldFree').value.trim(); if(!r){ toast('Write what the boxes are for'); return; } ldOpen({piNo:'',customer:r,free:r,lines:[]}); }
 function ldOpen(order){
@@ -849,6 +852,48 @@ function ldScan(id){
   else { banner('ok','✓ '+b.product+' '+b.shade+' · '+id); beep('ok'); }
   ldDraw();
 }
+/* ---------------- DISPATCH SLIPS (office: an order to load when there is no PI) ---------------- */
+function dsOpen(){
+  var names=(B.customers||[]).map(function(c){ return '<option value="'+esc(c.name)+'">'; }).join('');
+  openModal('<h2>New dispatch slip</h2><div class="sub">For goods going out without a PI. The godown loads against it and the CRM checks every box.</div>'+
+    '<label>Going to (customer) *</label><input id="dsCust" list="dsCustList" placeholder="e.g. Sanjay Enterprise"><datalist id="dsCustList">'+names+'</datalist>'+
+    '<div id="dsLines"></div><div style="margin-top:8px"><button class="sec mini" onclick="dsAdd()">+ Add product</button></div>'+
+    '<label>Notes (vehicle, invoice no., anything for the godown)</label><input id="dsNotes">'+
+    '<div class="acts"><button onclick="dsSave()">Create and print slip</button><button class="sec" onclick="closeModal()">Cancel</button></div><div id="dsMsg"></div>');
+  dsAdd(); setTimeout(function(){ $('dsCust').focus(); },50);
+}
+function dsAdd(){ var d=document.createElement('div'); d.className='line';
+  d.innerHTML='<div class="grid"><div><label>Product</label><select class="p">'+prodOptions()+'</select></div><div><label>Shade</label><select class="s"><option value=""></option></select></div></div>'+
+    '<div class="grid2"><div><label>Boxes</label><input class="b" type="number" min="1" inputmode="numeric"></div><div style="align-self:end;text-align:right"><button class="mini sec x">✕</button></div></div>';
+  $('dsLines').appendChild(d);
+  var ps=d.querySelector('.p'); ps.onchange=function(){ var x=prod(ps.value); d.querySelector('.s').innerHTML='<option value=""></option>'+(x?x.shades.map(function(s){ return '<option>'+esc(s.shade)+'</option>'; }).join(''):''); };
+  d.querySelector('.x').onclick=function(){ d.remove(); };
+}
+function dsSave(){
+  var p={ customer:$('dsCust').value.trim(), notes:$('dsNotes').value.trim(),
+    lines:[].map.call($('dsLines').querySelectorAll('.line'),function(d){ return { product:d.querySelector('.p').value, shade:d.querySelector('.s').value, boxes:d.querySelector('.b').value }; }) };
+  msg('dsMsg','Saving…','warn');
+  call('CRM_saveSlip',p).then(function(r){ if(!r.ok){ msg('dsMsg',esc(r.msg)); return; } closeModal(); toast(r.slip.slipNo+' created'); dsPrint(r.slip); loadLoading(true); }).catch(fail('dsMsg'));
+}
+function dsPrintNo(no){ call('CRM_getSlip',no).then(function(r){ if(r.ok) dsPrint(r.slip); else toast(r.msg); }).catch(function(e){ toast(e.message); }); }
+function dsPrint(sl){
+  var rows=sl.lines.map(function(l,i){ return '<tr><td>'+(i+1)+'</td><td>'+esc(l.product)+'</td><td>'+esc(l.shade)+'</td><td class="n">'+l.boxes+'</td><td></td></tr>'; }).join('');
+  var tot=sl.lines.reduce(function(a,l){ return a+l.boxes; },0);
+  var doc='<!DOCTYPE html><html><head><meta charset="utf-8"><title>'+esc(sl.slipNo)+'</title><style>@page{size:A5;margin:10mm}body{font-family:Arial,Helvetica,sans-serif;color:#0a1a3a;font-size:11pt;margin:0}'+
+    'h1{font-size:15pt;margin:0;letter-spacing:.04em}h1 b{color:#e9831a}.top{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:2px solid #0a2a66;padding-bottom:6px}'+
+    '.k{color:#555;font-size:9pt}.big{font-size:13pt;font-weight:700}table{width:100%;border-collapse:collapse;margin-top:10px}th,td{border:1px solid #9aa7bd;padding:6px;text-align:left;font-size:10pt}th{background:#eef2f8}.n{text-align:right;font-weight:700}'+
+    '.sig{display:flex;gap:16px;margin-top:34px}.sig div{flex:1;border-top:1px solid #333;padding-top:4px;font-size:9pt;color:#444}</style></head><body>'+
+    '<div class="top"><div><h1>EUROBOND <b>SEALANT</b></h1><div class="k">Euro Sealant Private Limited · Puzhal, Chennai</div></div><div style="text-align:right"><div class="k">DISPATCH SLIP</div><div class="big">'+esc(sl.slipNo)+'</div><div class="k">'+esc(fmtYmd((sl.createdAt||'').slice(0,10)))+'</div></div></div>'+
+    '<div style="margin-top:10px"><span class="k">To</span><div class="big">'+esc(sl.customer)+'</div></div>'+(sl.notes?'<div style="margin-top:6px"><span class="k">Notes</span><div>'+esc(sl.notes)+'</div></div>':'')+
+    '<table><thead><tr><th>#</th><th>Product</th><th>Shade</th><th class="n">Boxes</th><th>Loaded ✓</th></tr></thead><tbody>'+rows+'<tr><td></td><td colspan="2"><b>Total</b></td><td class="n">'+tot+'</td><td></td></tr></tbody></table>'+
+    '<div class="k" style="margin-top:8px">Scan every box in the CRM under Load → '+esc(sl.slipNo)+'. Prepared by '+esc(sl.createdBy||'')+'.</div>'+
+    '<div class="sig"><div>Prepared by</div><div>Loaded by</div><div>Driver / received by</div></div></body></html>';
+  var w=null; try{ w=window.open('','_blank'); }catch(e){}
+  if(w){ w.document.open(); w.document.write(doc); w.document.close(); setTimeout(function(){ try{ w.focus(); w.print(); }catch(e){} },400); }
+  else toast('Allow pop-ups for this site to print the slip');
+}
+function dsCancel(no){ if(!window.confirm('Cancel '+no+'? The godown will no longer see it.')) return;
+  call('CRM_cancelSlip',no).then(function(r){ if(!r.ok){ toast(r.msg); return; } toast(no+' cancelled'); loadLoading(true); }).catch(function(e){ toast(e.message); }); }
 function ldBack(){ stopCam(); SCAN_CB=null; LD=null; $('ldScanCard').innerHTML=''; $('ldWork').hidden=true; $('ldPick').hidden=false; loadLoading(true); }
 function ldUndoOpen(){ openModal('<h2>Undo a loaded box</h2><div class="sub">Scan or type the box that should not be on the truck.</div><label>Box</label><input id="undoId" placeholder="ES000123"><div class="acts"><button onclick="ldUndo()">Take it off</button><button class="sec" onclick="closeModal()">Cancel</button></div><div id="undoMsg"></div>'); }
 function ldUndo(){ var id=normCode($('undoId').value);
