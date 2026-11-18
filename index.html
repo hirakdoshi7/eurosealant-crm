@@ -813,9 +813,23 @@ function rcDraw(){ if(!RC) return; var g={}, done=0, tot=0;
   var c=$('rcCnt'); if(c) c.textContent=done+' of '+tot+' in';
 }
 function rcScan(id){ var b=RC.boxes[id];
+  if(RC.pending){ if(id!==RC.pending){ banner('err','First answer the question about '+RC.pending+' below'); beep('err'); } return; }
   if(!b){ banner('err',id+' is not part of this delivery'); beep('err'); addScanRow(id,'err','Not in this delivery'); return; }
   if(b.status!=='Labelled'){ banner('warn',id+' already scanned'); beep('warn'); return; }
+  var k=b.product+'|'+b.shade;
+  if(RC.pile&&RC.pile!==k){ RC.pending=id; var was=RC.pile.split('|');                 // shade changed mid-pile: possible wrong sticker
+    banner('err','Check this box! You were scanning '+was[0].replace(' Sealant','')+' '+was[1]+', but this label says '+b.product.replace(' Sealant','')+' '+b.shade+'.');
+    beep('err'); rcAsk(b); return; }
+  rcAccept(id); }
+function rcAccept(id){ var b=RC.boxes[id]; RC.pile=b.product+'|'+b.shade;
   b.status='Saving'; RC.q.push(id); addScanRow(id,'q',b.product+' '+b.shade); banner('ok','✓ '+b.product+' '+b.shade+' · '+id); beep('ok'); rcDraw(); }
+function rcAsk(b){ var a=$('pileAsk'); if(!a){ a=document.createElement('div'); a.id='pileAsk'; $('sban').parentNode.insertBefore(a,$('sban').nextSibling); }
+  var nm=esc(b.product.replace(' Sealant','')+' '+b.shade);
+  a.innerHTML='<div class="sub" style="margin:8px 0 6px;text-align:center">Look at the shade printed on the carton of <b>'+esc(b.id)+'</b>. Is it <b>'+nm+'</b>?</div>'+
+    '<div class="row"><div><button class="big" onclick="rcPileYes()">Yes, carton is '+nm+'</button></div><div><button class="big sec" onclick="rcPileNo()">No, set it aside</button></div></div>'; a.hidden=false; }
+function rcPileYes(){ var id=RC.pending; RC.pending=null; $('pileAsk').hidden=true; rcAccept(id); }
+function rcPileNo(){ var id=RC.pending; RC.pending=null; $('pileAsk').hidden=true;
+  addScanRow(id,'err','Set aside: wrong sticker? Not scanned'); banner('warn',id+' not scanned. Keep this box aside. Its sticker probably swapped with a box in another pile: when that one turns up, swap the two stickers and scan both.'); beep('warn'); }
 function rcBack(){ stopCam(); SCAN_CB=null; RC=null; $('rcScanCard').innerHTML=''; $('rcWork').hidden=true; $('rcPick').hidden=false; loadLots(true); }
 function rcFinish(){ if(RC.q.size()){ toast('Still saving scans… try again in a moment'); return; }
   var left=Object.keys(RC.boxes).filter(function(id){ return RC.boxes[id].status==='Labelled'; }).length;
