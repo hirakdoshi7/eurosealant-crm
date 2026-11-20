@@ -844,20 +844,23 @@ function loadLoading(force){
   return call('CRM_loadingList').then(function(r){ if(!r.ok){ toast(r.msg); return; } C.loading=r; drawOrders(); }).catch(function(e){ toast(e.message); });
 }
 function drawOrders(){ var o=C.loading.orders;
-  $('ldOrders').innerHTML=o.length?o.map(function(p,i){ var need=0,got=0; p.lines.forEach(function(l){ need+=l.boxes; got+=l.scanned; });
-    return '<div class="item"><div style="display:flex;justify-content:space-between;gap:8px"><span class="t">'+esc(p.customer)+'</span><span class="badge '+(got>=need&&need?'b-won':got?'b-pend':'b-blue')+'">'+got+' / '+need+' boxes</span></div>'+
-      '<div class="sub">'+(p.slip?'Dispatch slip ':'')+esc(p.piNo)+' · '+esc(p.date)+(p.invoice?' · billed '+esc(p.invoice):'')+(p.notes?' · '+esc(p.notes):'')+'</div><div class="sub" style="margin-top:4px">'+p.lines.map(function(l){ return l.boxes+' × '+esc(l.product+' '+l.shade)+(l.batch?' · batch '+esc(l.batch)+(l.expiry?' (exp '+esc(fmtYmd(l.expiry))+')':''):'')+(l.loose?' + '+l.loose+' pcs loose':''); }).join('<br>')+'</div>'+
-      '<div class="acts"><button class="mini ldgo" data-i="'+i+'">Start loading</button>'+(p.slip?'<button class="mini sec dsprn" data-s="'+esc(p.piNo)+'">Print slip</button>'+(ME.perms.dispatch&&!got?'<button class="mini sec dsx" data-s="'+esc(p.piNo)+'">Cancel slip</button>':''):'')+'</div></div>'; }).join(''):'<div class="empty" style="margin-top:10px">No PIs or dispatch slips waiting to load.</div>';
+  $('ldOrders').innerHTML=o.length?o.map(function(p,i){ var need=0,got=0,hand=0; p.lines.forEach(function(l){ if(l.manual){ hand+=l.boxes; return; } need+=l.boxes; got+=l.scanned; });
+    return '<div class="item"><div style="display:flex;justify-content:space-between;gap:8px"><span class="t">'+esc(p.customer)+'</span><span class="badge '+(got>=need&&need?'b-won':got?'b-pend':'b-blue')+'">'+(need?got+' / '+need+' scanned':'')+(need&&hand?' + ':'')+(hand?hand+' by hand':'')+'</span></div>'+
+      '<div class="sub">'+(p.slip?'Dispatch slip ':'')+esc(p.piNo)+' · '+esc(p.date)+(p.invoice?' · billed '+esc(p.invoice):'')+(p.notes?' · '+esc(p.notes):'')+'</div><div class="sub" style="margin-top:4px">'+p.lines.map(function(l){ return l.boxes+' × '+esc(l.product+' '+l.shade)+(l.batch?' · batch '+esc(l.batch)+(l.expiry?' (exp '+esc(fmtYmd(l.expiry))+')':''):'')+(l.loose?' + '+l.loose+' pcs loose':'')+(l.manual?' · <b>no sticker, load by hand</b>':''); }).join('<br>')+'</div>'+
+      '<div class="acts">'+(need?'<button class="mini ldgo" data-i="'+i+'">Start loading</button>':'')+(hand&&got>=need?'<button class="mini dshand" data-s="'+esc(p.piNo)+'" data-h="'+hand+'">Mark loaded</button>':'')+(p.slip?'<button class="mini sec dsprn" data-s="'+esc(p.piNo)+'">Print slip</button>'+(ME.perms.dispatch&&!got?'<button class="mini sec dsx" data-s="'+esc(p.piNo)+'">Cancel slip</button>':''):'')+'</div></div>'; }).join(''):'<div class="empty" style="margin-top:10px">No PIs or dispatch slips waiting to load.</div>';
   [].forEach.call($('ldOrders').querySelectorAll('.ldgo'),function(b){ b.onclick=function(){ ldOpen(C.loading.orders[+b.getAttribute('data-i')]); }; });
   [].forEach.call($('ldOrders').querySelectorAll('.dsprn'),function(b){ b.onclick=function(){ dsPrintNo(b.getAttribute('data-s')); }; });
   [].forEach.call($('ldOrders').querySelectorAll('.dsx'),function(b){ b.onclick=function(){ dsCancel(b.getAttribute('data-s')); }; });
+  [].forEach.call($('ldOrders').querySelectorAll('.dshand'),function(b){ b.onclick=function(){ dsHand(b.getAttribute('data-s'),+b.getAttribute('data-h')); }; });
 }
+function dsHand(no,n){ if(!window.confirm('Are all '+n+' box(es) without stickers for '+no+' on the truck?')) return;
+  call('CRM_slipHandLoaded',no).then(function(r){ if(!r.ok){ toast(r.msg); return; } toast(no+' loaded'); loadLoading(true); }).catch(function(e){ toast(e.message); }); }
 function ldStartFree(){ var r=$('ldFree').value.trim(); if(!r){ toast('Write what the boxes are for'); return; } ldOpen({piNo:'',customer:r,free:r,lines:[]}); }
 function ldOpen(order){
   $('ldPick').hidden=true; $('ldWork').hidden=false;
   var inStock={}; (C.loading.stock||[]).forEach(function(s){ inStock[s[0]]={product:s[1],shade:s[2],batch:s[3],exp:s[4]}; });
   LD={order:order, inStock:inStock, loaded:{}, need:{}};
-  order.lines.forEach(function(l){ var k=l.product+'|'+l.shade+(l.batch?'|'+l.batch:''); if(LD.need[k]){ LD.need[k].n+=l.boxes; LD.need[k].d+=l.scanned; } else LD.need[k]={n:l.boxes,d:l.scanned}; });
+  order.lines.forEach(function(l){ if(l.manual) return; var k=l.product+'|'+l.shade+(l.batch?'|'+l.batch:''); if(LD.need[k]){ LD.need[k].n+=l.boxes; LD.need[k].d+=l.scanned; } else LD.need[k]={n:l.boxes,d:l.scanned}; });
   $('ldTitle').textContent=order.free?order.free:order.customer+' · '+order.piNo;
   $('rcScanCard').innerHTML=''; $('ldScanCard').innerHTML=scannerHtml('ld')+'<div class="acts" style="margin-top:12px"><button class="sec" onclick="ldUndoOpen()">Undo a scan</button></div>'; ldDraw(); SCAN_CB=ldScan;
   LD.q=makeQueue(function(ids){ return call('CRM_scanOut',order.piNo,ids,order.free||'').then(function(res){ if(!res.ok) throw new Error(res.msg);
@@ -869,7 +872,7 @@ function ldDraw(){ var keys=Object.keys(LD.need), done=0, tot=0;
   $('ldProg').innerHTML=LD.order.free?'<div class="pl"><b>Boxes scanned</b><b>'+Object.keys(LD.loaded).length+'</b></div>':
     '<div class="pl"><b>All boxes</b><b>'+done+' / '+tot+'</b></div><div class="pb"><i class="'+(done>=tot?'done':'')+'" style="width:'+(tot?done/tot*100:0)+'%"></i></div>'+
     keys.map(function(k){ var n=LD.need[k]; return '<div class="pl"><span>'+esc(k.split('|').map(function(x,j){ return j===2?'batch '+x:x; }).join(' · '))+'</span><span>'+n.d+' / '+n.n+'</span></div><div class="pb"><i class="'+(n.d>=n.n?'done':'')+'" style="width:'+Math.min(100,n.d/n.n*100)+'%"></i></div>'; }).join('')+
-    (tot&&done>=tot?'<div class="msg ok">All boxes loaded. The office can now bill and record the dispatch.</div>':'');
+    (tot&&done>=tot?(LD.order.lines.some(function(l){ return l.manual; })?'<div class="msg ok">All stickered boxes scanned. Load the boxes without stickers, then go back and tap <b>Mark loaded</b> on this slip.</div>':'<div class="msg ok">All boxes loaded. The office can now bill and record the dispatch.</div>'):'');
   var c=$('ldCnt'); if(c) c.textContent=LD.order.free?'':done+' of '+tot+' loaded';
 }
 function ldScan(id){
@@ -902,7 +905,7 @@ function dsOpen(){
     '<div id="dsLines"></div><div style="margin-top:8px"><button class="sec mini" onclick="dsAdd()">+ Add product</button></div>'+
     '<label>Notes for the godown</label><input id="dsNotes">'+
     '<div class="acts"><button onclick="dsSave()">Create and print slip</button><button class="sec" onclick="closeModal()">Cancel</button></div><div id="dsMsg"></div>');
-  dsAdd(); setTimeout(function(){ $('dsCust').focus(); },50);
+  dsAdd(); setTimeout(function(){ var e=$('dsCust'); if(e) e.focus(); },50);
 }
 function dsBatches(product,shade){ var m={};
   (C.loading.stock||[]).forEach(function(s){ if(s[1]===product&&s[2]===shade){ var k=s[3]||''; (m[k]=m[k]||{batch:k,exp:s[4]||'',n:0}).n++; } });
@@ -914,6 +917,8 @@ function dsRates(){ [].forEach.call($('dsLines').querySelectorAll('.line'),funct
 function dsAdd(){ var d=document.createElement('div'); d.className='line';
   d.innerHTML='<div class="grid"><div><label>Product</label><select class="p">'+prodOptions()+'</select></div><div><label>Shade</label><select class="s"><option value=""></option></select></div></div>'+
     '<div class="grid2"><div><label>Boxes</label><input class="b" type="number" min="1" inputmode="numeric"></div><div><label>Rate (₹/pc)</label><input class="r" type="number" min="0" step="0.01" inputmode="decimal"></div><div style="align-self:end;text-align:right"><button class="mini sec x">✕</button></div></div>'+
+    '<label class="mk" style="display:flex;align-items:center;gap:8px;margin:8px 0 0;font-weight:400"><input type="checkbox" class="m" style="width:auto">No sticker yet – godown loads by hand</label>'+
+    '<div class="mbw" hidden><label>Batch (if known)</label><input class="mb" maxlength="30" placeholder="e.g. R35834"></div>'+
     '<div class="bt"></div>';
   $('dsLines').appendChild(d);
   var ps=d.querySelector('.p'), ss=d.querySelector('.s'), bx=d.querySelector('.b'), rt=d.querySelector('.r');
@@ -921,12 +926,16 @@ function dsAdd(){ var d=document.createElement('div'); d.className='line';
   ss.onchange=function(){ if(!rt.dataset.typed) rt.value=dsRateFor(ps.value,ss.value); dsSuggest(d); };
   bx.oninput=function(){ dsSuggest(d); };
   rt.oninput=function(){ rt.dataset.typed='1'; };
+  d.querySelector('.m').onchange=function(){ d.dataset.auto=''; dsSuggest(d); };
   d.querySelector('.x').onclick=function(){ d.remove(); };
 }
 function dsSuggest(d){ var p=d.querySelector('.p').value, sh=d.querySelector('.s').value, want=Math.floor(+d.querySelector('.b').value||0), box=d.querySelector('.bt');
-  if(!p||!sh){ box.innerHTML=''; return; }
+  var m=d.querySelector('.m'), mbw=d.querySelector('.mbw');
+  if(!p||!sh){ box.innerHTML=''; mbw.hidden=!m.checked; return; }
   var bs=dsBatches(p,sh);
-  if(!bs.length){ box.innerHTML='<div class="sub" style="margin-top:6px">No scanned-in boxes of this item yet, so the godown can load any batch.</div>'; return; }
+  if(!bs.length&&!m.checked){ m.checked=true; d.dataset.auto='1'; }
+  mbw.hidden=!m.checked;
+  if(m.checked){ box.innerHTML='<div class="sub" style="margin-top:6px">'+(bs.length?'':'No scanned-in boxes of this item yet. ')+'These boxes go without scanning: the godown loads them by hand and taps <b>Mark loaded</b> on the slip.</div>'; return; }
   var left=want;
   box.innerHTML='<div class="sub" style="margin:8px 0 4px">Batches in stock, oldest first. Tick what to send:</div>'+bs.map(function(b){ var take=Math.min(b.n,Math.max(left,0)); left-=take;
     return '<label class="bk" style="display:flex;align-items:center;gap:8px;margin:4px 0;font-weight:400"><input type="checkbox" class="bc" style="width:auto"'+(take?' checked':'')+'>'+
@@ -944,7 +953,8 @@ function dsSave(){
   var bad=null;
   var p={ customer:$('dsCust').value.trim(), notes:$('dsNotes').value.trim(), address:$('dsAddr').value.trim(), reference:$('dsRef').value.trim(), challan:$('dsChallan').value.trim(), vehicle:$('dsVeh').value.trim(),
     lines:[].map.call($('dsLines').querySelectorAll('.line'),function(d,i){ var picks=[].map.call(d.querySelectorAll('.bn'),function(n){ return {batch:n.dataset.batch, boxes:+n.value||0}; }).filter(function(x){ return x.boxes>0; });
-      var want=Math.floor(+d.querySelector('.b').value||0), got=picks.reduce(function(a,x){ return a+x.boxes; },0);
+      var want=Math.floor(+d.querySelector('.b').value||0), got=picks.reduce(function(a,x){ return a+x.boxes; },0), man=d.querySelector('.m').checked;
+      if(man) return { product:d.querySelector('.p').value, shade:d.querySelector('.s').value, boxes:want, rate:d.querySelector('.r').value, manual:true, batch:d.querySelector('.mb').value.trim() };
       if(d.querySelector('.bn')&&!got) bad='Line '+(i+1)+': tick at least one batch.';
       else if(picks.length&&want&&got!==want) bad='Line '+(i+1)+': '+want+' boxes asked but '+got+' ticked.';
       return { product:d.querySelector('.p').value, shade:d.querySelector('.s').value, boxes:want||got, rate:d.querySelector('.r').value, picks:picks }; }) };
@@ -957,9 +967,9 @@ function dsInr(n){ return '₹'+Math.round(n).toLocaleString('en-IN'); }
 function dsPrint(sl){
   var n=0, totB=0, totP=0, totA=0, rows='';
   sl.lines.forEach(function(l){ var pcsBox=l.pcsBox||24, parts=(l.picks&&l.picks.length)?l.picks:[{batch:'',expiry:'',boxes:l.boxes}];
-    if(!(l.picks&&l.picks.length)&&sl.loaded){ var ld=sl.loaded.filter(function(x){ return x.product===l.product&&x.shade===l.shade; }); if(ld.length) parts=ld; }
+    if(!l.manual&&!(l.picks&&l.picks.length)&&sl.loaded){ var ld=sl.loaded.filter(function(x){ return x.product===l.product&&x.shade===l.shade; }); if(ld.length) parts=ld; }
     parts.forEach(function(pt){ n++; var pcs=pt.boxes*pcsBox, amt=l.rate?pcs*l.rate:0; totB+=pt.boxes; totP+=pcs; totA+=amt;
-      rows+='<tr><td>'+n+'</td><td>'+esc(l.product)+'</td><td>'+esc(l.shade)+'</td><td>'+esc(pt.batch||'oldest first')+'</td><td>'+(pt.expiry?esc(fmtYmd(pt.expiry)):'')+'</td><td class="n">'+pt.boxes+'</td><td class="n">'+pcs+'</td><td class="n">'+(l.rate?l.rate:'')+'</td><td class="n">'+(amt?dsInr(amt):'')+'</td></tr>'; }); });
+      rows+='<tr><td>'+n+'</td><td>'+esc(l.product)+'</td><td>'+esc(l.shade)+'</td><td>'+(l.manual?esc(l.batch||'any')+' <i>(no sticker)</i>':esc(pt.batch||'oldest first'))+'</td><td>'+(pt.expiry?esc(fmtYmd(pt.expiry)):'')+'</td><td class="n">'+pt.boxes+'</td><td class="n">'+pcs+'</td><td class="n">'+(l.rate?l.rate:'')+'</td><td class="n">'+(amt?dsInr(amt):'')+'</td></tr>'; }); });
   var doc='<!DOCTYPE html><html><head><meta charset="utf-8"><title>'+esc(sl.slipNo)+'</title><style>@page{size:A4 landscape;margin:10mm}body{font-family:Arial,Helvetica,sans-serif;color:#0a1a3a;font-size:10.5pt;margin:0}'+
     'h1{font-size:16pt;margin:0;letter-spacing:.04em}h1 b{color:#e9831a}.top{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:2px solid #0a2a66;padding-bottom:6px}'+
     '.k{color:#555;font-size:8.5pt}.big{font-size:13pt;font-weight:700}.meta{display:grid;grid-template-columns:1.3fr 1fr 1fr 1fr;gap:6px 14px;margin-top:8px}'+
@@ -971,7 +981,7 @@ function dsPrint(sl){
     (sl.notes?'<div style="margin-top:6px"><span class="k">Notes</span> '+esc(sl.notes)+'</div>':'')+
     '<table><thead><tr><th>#</th><th>Product</th><th>Shade</th><th>Batch</th><th>Expiry</th><th class="n">Boxes</th><th class="n">Pcs</th><th class="n">Rate</th><th class="n">Amount</th></tr></thead><tbody>'+rows+'</tbody>'+
     '<tfoot><tr><td></td><td colspan="4">Total (before GST)</td><td class="n">'+totB+'</td><td class="n">'+totP+'</td><td></td><td class="n">'+(totA?dsInr(totA):'')+'</td></tr></tfoot></table>'+
-    '<div class="k" style="margin-top:6px">Load in the CRM under Load → '+esc(sl.slipNo)+'. Every box is scanned; a wrong item or batch is refused.</div>'+
+    '<div class="k" style="margin-top:6px">Load in the CRM under Load → '+esc(sl.slipNo)+'. Every box with a sticker is scanned; a wrong item or batch is refused.'+(sl.lines.some(function(l){ return l.manual; })?' Lines marked <i>no sticker</i> are loaded by hand, then tap <b>Mark loaded</b> on the slip.':'')+'</div>'+
     '<div class="sig"><div>Issued by: '+esc(sl.createdBy||'')+'</div><div>Time</div><div>Vehicle: '+esc(sl.vehicle||'')+'</div><div>Loading person</div><div>Driver / received by</div></div></body></html>';
   if(isApp()){ printInFrame(doc); return; }
   var w=null; try{ w=window.open('','_blank'); }catch(e){}
