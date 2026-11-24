@@ -333,7 +333,7 @@ th{color:var(--grey);font-size:11px;text-transform:uppercase;letter-spacing:.04e
     <section id="t-dispatch" hidden>
       <div class="card"><div class="hrow"><h2>Ready to dispatch</h2><button class="mini sec" onclick="loadDispatch()">Refresh</button></div>
         <div class="sub">Approved PIs not yet dispatched. Bill in Tally first, then record the dispatch here.</div><div id="dList"></div></div>
-      <div class="card"><h2>Recently dispatched</h2><div id="dDone" class="sub"></div></div>
+      <div class="card"><h2>Recently dispatched</h2><div class="sub">Mark each one delivered when the customer confirms.</div><div id="dDone" class="sub"></div></div>
     </section>
 
     <!-- APPROVALS -->
@@ -354,6 +354,15 @@ th{color:var(--grey);font-size:11px;text-transform:uppercase;letter-spacing:.04e
       </div>
       <div id="dbBody"></div>
     </section>
+
+    <!-- PEOPLE MODULES -->
+    <section id="t-attendance" hidden><div id="atBody"></div></section>
+    <section id="t-payroll" hidden>
+      <div class="card" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><h2 style="margin:0">Payroll</h2><input id="prMonth" type="month" style="width:auto" onchange="loadPayroll()"><span class="sub">Same rules as the Payroll tab in the attendance sheet.</span></div>
+      <div id="prBody"></div></section>
+    <section id="t-expenses" hidden><div id="exBody"></div></section>
+    <section id="t-pipeline" hidden><div id="plBody"></div></section>
+    <section id="t-people" hidden><div id="ppBody"></div></section>
 
     <!-- TEAM -->
     <section id="t-team" hidden>
@@ -432,6 +441,40 @@ function call(fn){
     function(e){ busy(false); throw e; });
 }
 function fail(id){ return function(e){ msg(id,esc(e.message||e)); }; }
+// same as call() but without the progress bar: for background refreshes the user did not ask for
+function quiet(fn){ var args=[].slice.call(arguments,1);
+  return rpc(fn,[T].concat(args)).then(function(x){ if(x&&x.session){ endSession('Your session ended. Please log in again.'); throw new Error(x.msg); } return x; }); }
+
+/* ---------------- speed: every screen draws from what is already on the phone, then refreshes quietly ---------------- */
+var DC={}, DC_T={}, DC_AT=0, NAV=false;
+function dcKey(fn,args){ return fn+(args&&args.length?'|'+JSON.stringify(args):''); }
+function dcLoad(){ DC={}; try{ var x=JSON.parse(sget('crm_dc_'+ME.username)||'{}'); if(x&&x.v===1) DC=x.d||{}; }catch(e){} }
+function dcSave(){ clearTimeout(dcSave._t); dcSave._t=setTimeout(function(){ if(!ME) return; try{ localStorage.setItem('crm_dc_'+ME.username,JSON.stringify({v:1,d:DC})); }catch(e){ try{ localStorage.removeItem('crm_dc_'+ME.username); }catch(x){} } },400); }
+function dcDrop(){ [].forEach.call(arguments,function(k){ Object.keys(DC).forEach(function(x){ if(x===k||x.indexOf(k+'|')===0) delete DC[x]; }); }); dcSave(); }
+function dcHas(fn,args){ return !!DC[dcKey(fn,args)]; }
+function typing(){ var a=document.activeElement; return !!(a&&/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)&&!$('app').hidden&&a.closest&&a.closest('section[id^="t-"]')&&!a.closest('#modal')); }
+// draw(data) runs at once with the copy on this phone (if any), then again only if the server has something newer
+function view(fn,args,draw,onErr){ var k=dcKey(fn,args), had=DC[k], scr=CUR;
+  if(had){ try{ draw(had,true); }catch(e){ console.error(e); } }
+  if(had&&NAV&&Date.now()-(DC_T[k]||0)<45000) return Promise.resolve();   // just switching screens: fresh enough
+  return (had?quiet:call).apply(null,[fn].concat(args||[])).then(function(r){
+    if(!r||!r.ok){ if(!had&&onErr) onErr(r&&r.msg||'Something went wrong'); return; }
+    var same=had&&JSON.stringify(had)===JSON.stringify(r); DC[k]=r; DC_T[k]=Date.now(); dcSave();
+    if(same) return; if(had&&(CUR!==scr||typing())) return;      // newer data is kept; shown next time
+    draw(r,false);
+  }).catch(function(e){ if(!had&&onErr) onErr(e.message); });
+}
+// one trip fills every screen; repeated every 2 minutes while the app is open
+function prefetch(){ if(!T||!ME) return Promise.resolve(); if(prefetch._busy) return prefetch._busy;
+  prefetch._busy=quiet('CRM_all').then(function(r){ prefetch._busy=null; if(!r||!r.ok) return; DC_AT=Date.now();
+    var changed=false; Object.keys(r.data).forEach(function(k){ if(k==='boot') return; var s1=JSON.stringify(r.data[k]); DC_T[k]=Date.now(); if(!DC[k]||JSON.stringify(DC[k])!==s1){ DC[k]=r.data[k]; changed=true; } });
+    dcSave();
+    if(r.data.boot){ var b=r.data.boot; if(JSON.stringify(b)!==JSON.stringify(B)){ B=b; ME=b.user; HOME_AT=Date.now(); sset('crm_boot',JSON.stringify(b)); if(CUR==='home'&&!typing()) drawHome(); else updateBadges(); } }
+    if(changed&&!typing()&&$('modal').hidden&&!(CUR==='receive'||CUR==='load')){ if(CUR==='home') drawHome(); else go(CUR,true); }
+  }).catch(function(){ prefetch._busy=null; });
+  return prefetch._busy; }
+setInterval(function(){ if(T&&ME&&document.visibilityState==='visible'&&Date.now()-DC_AT>110000) prefetch(); },15000);
+document.addEventListener('visibilitychange',function(){ if(document.visibilityState==='visible'&&T&&ME&&Date.now()-DC_AT>30000) prefetch(); });
 
 /* ---------------- login ---------------- */
 (function(){ var l=sget('crm_logo'); if(l){ $('logoBig').src=l; $('logoSmall').src=l; return; }   // fetched once per device
@@ -446,30 +489,33 @@ function doLogin(){
     T=r.token; sset('crm_t',T); $('lp').value=''; boot(r);
   }).catch(function(e){ $('lb').disabled=false; $('lb').textContent='Log in'; msg('lm',esc(e.message)); });
 }
-function endSession(text){ T=''; sset('crm_t',null); sset('crm_boot',null); stopCam(); $('app').hidden=true; $('login').hidden=false; if(text) msg('lm',esc(text),'warn'); }
+function endSession(text){ if(ME) sset('crm_dc_'+ME.username,null); DC={}; T=''; sset('crm_t',null); sset('crm_boot',null); stopCam(); $('app').hidden=true; $('login').hidden=false; if(text) msg('lm',esc(text),'warn'); }
 function logout(){ var t=T; closeModal(); endSession(''); if(t) rpc('CRM_logout',[t]).catch(function(){}); }
 (function(){ var t=sget('crm_t'), b=sget('crm_boot');
   if(t){ T=t; if(b){ try{ boot(JSON.parse(b),true); }catch(e){} }
     call('CRM_bootstrap').then(function(r){ if(r.ok) boot(r); else endSession(r.msg); }).catch(function(){}); } })();
 
 function boot(r,fromCache){
-  var first=!B; B=r; ME=r.user; HOME_AT=Date.now();
+  var first=!B; B=r; ME=r.user; HOME_AT=Date.now(); if(first) dcLoad();
   if(!fromCache){ var keep=Object.assign({},r); sset('crm_boot',JSON.stringify(keep)); }
   $('login').hidden=true; $('app').hidden=false; $('meName').textContent=ME.name.split(' ')[0];
   buildNav();
+  if(!fromCache&&Date.now()-DC_AT>30000) setTimeout(prefetch,50);
   if(first){ initPi(); go('home'); } else { if(ME.perms.sell){ fillCustSelect(); } if(CUR==='home') drawHome(); else updateBadges(); }
 }
 
 /* ---------------- navigation ---------------- */
 function tabsFor(){
   var p=ME.perms, t=[['home','Home']];
-  if(p.sell) t.push(['newpi','New PI'],['pis','PIs'],['customers','Customers'],['payments','Payments']);
+  if(p.sell) t.push(['newpi','New PI'],['pis','PIs'],['customers','Customers'],['payments','Payments'],['pipeline','Pipeline']);
   t.push(['stock','Stock']);
   if(p.approve) t.splice(1,0,['approvals','Approvals']);
   if(p.boxes) t.push(['receive','Receive'],['load','Load'],['labels','Labels']);
   if(p.dispatch) t.push(['dispatch','Dispatch']);
   if(p.dashboard) t.push(['dashboard','Dashboard']);
-  if(p.team) t.push(['team','Team']);
+  t.push(['attendance','Attendance']); if(ME.role==='Admin') t.push(['payroll','Payroll']);
+  t.push(['expenses','Expenses'],['people','People']);
+  if(p.team) t.push(['team','Logins']);
   return t;
 }
 function buildNav(){
@@ -484,18 +530,18 @@ function updateBadges(){
   [].forEach.call($('navBtns').querySelectorAll('button'),function(b){ var k=b.getAttribute('data-t'), d=b.querySelector('.dot');
     var v=k==='approvals'?(h.kpis[2]&&ME.perms.approve?+h.kpis[2].v:0):0; d.hidden=!v; d.textContent=v; });
 }
-function go(t){
+function go(t,again){
   if(!tabsFor().some(function(x){return x[0]===t;})) t='home';
   if(CUR!==t && (CUR==='receive'||CUR==='load')) stopCam();
   CUR=t;
   tabsFor().forEach(function(x){ $('t-'+x[0]).hidden=x[0]!==t; });
   [].forEach.call($('navBtns').querySelectorAll('button'),function(b){ var on=b.getAttribute('data-t')===t; b.classList.toggle('on',on); if(on) b.scrollIntoView({inline:'center',block:'nearest'}); });
-  window.scrollTo(0,0);
-  ({home:drawHome,pis:loadPis,customers:drawCusts,stock:drawStock,payments:loadPay,dispatch:loadDispatch,approvals:loadApprovals,
-    dashboard:loadDash,team:loadTeam,receive:function(){loadLots();},load:function(){loadLoading();},labels:function(){loadLots();}}[t]||function(){})();
+  if(!again) window.scrollTo(0,0);
+  NAV=true; try{ ({home:drawHome,pis:loadPis,customers:drawCusts,stock:drawStock,payments:loadPay,dispatch:loadDispatch,approvals:loadApprovals,
+    dashboard:loadDash,team:loadTeam,attendance:loadAtt,payroll:loadPayroll,expenses:loadExp,pipeline:loadLeads,people:loadPeople,receive:function(){loadLots();},load:function(){loadLoading();},labels:function(){loadLots();}}[t]||function(){})(); } finally { NAV=false; }
 }
 function refreshAll(){
-  C={};
+  C={}; DC={}; dcSave(); setTimeout(prefetch,300);
   call('CRM_bootstrap').then(function(r){ if(r.ok){ boot(r); go(CUR); toast('Up to date'); } }).catch(function(e){ toast(e.message); });
 }
 
@@ -510,6 +556,7 @@ function drawHome(){
   var x='<div class="hero"><div class="g">'+esc(h.greeting)+'</div><div class="s">'+esc(h.summary)+'</div>'+
     '<div class="qa">'+qa.map(function(q){ return '<button data-go="'+q[0]+'">'+q[2]+esc(q[1])+'</button>'; }).join('')+'</div>'+
     '<div class="meta"><span id="homeAge">Updated '+(age<10?'just now':age<60?age+' s ago':Math.round(age/60)+' min ago')+'</span><button onclick="refreshHome()">Refresh</button></div></div>';
+  x+=hrHomeCard();
   x+='<div class="kpis">'+h.kpis.map(function(k){
       var tr=k.trend===null||k.trend===undefined?'':'<span class="t '+(k.trend>=0?'up':'dn')+'">'+(k.trend>=0?'▲ ':'▼ ')+Math.abs(k.trend)+'%</span>';
       return '<div class="kpi'+(k.warn?' warn':'')+'"><div class="k">'+esc(k.k)+'</div><div class="v">'+esc(k.v)+tr+'</div><div class="s">'+esc(k.s)+'</div></div>'; }).join('')+'</div>';
@@ -525,6 +572,8 @@ function drawHome(){
   [].forEach.call($('homeBody').querySelectorAll('[data-go]'),function(b){ b.onclick=function(){ go(b.getAttribute('data-go')); }; });
   [].forEach.call($('homeBody').querySelectorAll('[data-a]'),function(b){ b.onclick=function(){ var a=h.attention[+b.getAttribute('data-a')];
     if(a.link){ window.open(a.link,'_blank'); return; } if(a.go){ go(a.go); if(a.q&&a.go==='customers'){ $('custSearch').value=a.q; drawCusts(); } } }; });
+  if($('hrBtn')) $('hrBtn').onclick=function(){ hrCheck(this.getAttribute('data-type')); };
+  if($('fuCard')) $('fuCard').onclick=function(){ PL_FILTER='due'; go('pipeline'); };
   if($('evMore')) $('evMore').onclick=function(){ [].forEach.call($('homeBody').querySelectorAll('.ev.more'),function(x){ x.hidden=false; }); this.remove(); };
   [].forEach.call($('homeBody').querySelectorAll('[data-c]'),function(b){ b.onclick=function(){ var e=h.coming[+b.getAttribute('data-c')]; if(e.go) go(e.go); }; });
   updateBadges();
@@ -615,7 +664,7 @@ function piGenerate(){ if(!$('piCust').value){ msg('piMsg','Choose a customer fi
     var url=pdfUrl(r.pdfBase64); download(url,r.fileName); LAST={fileId:r.fileId,piNo:r.piNo};
     msg('piMsg','Created <b>'+esc(r.piNo)+'</b> and sent for approval. The PDF has downloaded.','ok');
     $('piLinks').innerHTML='<a href="'+url+'" target="_blank">Open '+esc(r.piNo)+'</a>'; $('piTo').value=r.custEmail||''; $('piEmMsg').textContent=''; $('piAfter').hidden=false;
-    delete C.pis; refreshHome(true); toast(r.piNo+' created');
+    delete C.pis; dcDrop('CRM_pis','CRM_approvals','CRM_dispatchList','CRM_dashboard'); refreshHome(true); toast(r.piNo+' created');
   }).catch(function(e){ $('bGen').disabled=false; msg('piMsg',esc(e.message)); }); }
 function piEmail(){ var to=$('piTo').value.trim(); if(!to){ $('piEmMsg').textContent='Enter an email address.'; return; } $('piEmMsg').textContent='Sending…';
   call('CRM_emailPI',{to:to,fileId:LAST.fileId}).then(function(r){ $('piEmMsg').textContent=r.ok?'Sent to '+to+'.':r.msg; }).catch(function(e){ $('piEmMsg').textContent=e.message; }); }
@@ -637,8 +686,8 @@ function getPdf(fid){ toast('Downloading…'); call('CRM_getPdf',fid).then(funct
 function loadPis(){
   $('piFilters').innerHTML=[['all','All'],['pending','Waiting approval'],['won','Approved'],['billed','Billed'],['lost','Rejected']].map(function(f){ return '<button data-f="'+f[0]+'" class="'+(PI_FILTER===f[0]?'on':'')+'">'+f[1]+'</button>'; }).join('');
   [].forEach.call($('piFilters').querySelectorAll('button'),function(b){ b.onclick=function(){ PI_FILTER=b.getAttribute('data-f'); loadPis(); }; });
-  if(C.pis) drawPis(); else $('piList').innerHTML='<div class="skel"></div><div class="skel"></div><div class="skel"></div>';
-  call('CRM_pis').then(function(r){ if(!r.ok){ $('piList').textContent=r.msg; return; } C.pis=r.rows; drawPis(); }).catch(function(e){ $('piList').textContent=e.message; });
+  if(!dcHas('CRM_pis')) $('piList').innerHTML='<div class="skel"></div><div class="skel"></div><div class="skel"></div>';
+  view('CRM_pis',[],function(r){ C.pis=r.rows; drawPis(); },function(m){ $('piList').textContent=m; });
 }
 function drawPis(){ if(!C.pis) return; var q=$('piSearch').value.trim().toLowerCase();
   var rows=C.pis.filter(function(p){ if(q&&(p.customer+' '+p.piNo).toLowerCase().indexOf(q)<0) return false;
@@ -676,6 +725,7 @@ function saveCust(confirmBranch){
     if(!r.ok){ if(r.confirm){ msg('cMsg',esc(r.msg)+' <button class="mini" id="cConf">Yes, save as a branch</button>','warn'); $('cConf').onclick=function(){ saveCust(true); }; return; } msg('cMsg',esc(r.msg)); return; }
     var wasNew=!EDIT_CUST; B.customers=r.customers; fillCustSelect(); closeCustForm(); drawCusts(); toast(wasNew?'Customer added':'Saved');
     if(wasNew&&custExists(p.name)) $('piCust').value=p.name;
+    if(PENDING_PI&&custExists(PENDING_PI)){ var nm=PENDING_PI; PENDING_PI=''; plStartPi(nm); }
   }).catch(fail('cMsg'));
 }
 
@@ -699,8 +749,8 @@ function invTable(rows){ return '<div class="tscroll"><table><thead><tr><th>Invo
 function loadPay(){
   $('payFilters').innerHTML=[['unpaid','Unpaid'],['all','All invoices']].map(function(f){ return '<button data-f="'+f[0]+'" class="'+(PAY_FILTER===f[0]?'on':'')+'">'+f[1]+'</button>'; }).join('');
   [].forEach.call($('payFilters').querySelectorAll('button'),function(b){ b.onclick=function(){ PAY_FILTER=b.getAttribute('data-f'); loadPay(); }; });
-  if(C.inv) drawPay(); else $('payList').innerHTML='<div class="skel"></div><div class="skel"></div>';
-  call('CRM_invoices').then(function(r){ if(!r.ok){ $('payList').textContent=r.msg; return; } C.inv=r; drawPay(); }).catch(function(e){ $('payList').textContent=e.message; });
+  if(!dcHas('CRM_invoices')) $('payList').innerHTML='<div class="skel"></div><div class="skel"></div>';
+  view('CRM_invoices',[],function(r){ C.inv=r; drawPay(); },function(m){ $('payList').textContent=m; });
 }
 function drawPay(){ var r=C.inv; if(!r) return;
   $('payTiles').innerHTML=[['Unpaid',r.asOf?inr(r.totals.unpaid):'–',''],['Overdue',r.asOf?inr(r.totals.overdue):'–',''],['Invoices',String(r.totals.invoices),''],['Report date',r.asOf?fmtYmd(r.asOf):'–','Tally receivables']]
@@ -760,9 +810,8 @@ function makeQueue(send){ var q=[], flying=false;
 /* ---------------- RECEIVE ---------------- */
 var RC=null;
 function loadLots(force){
-  if(C.lots&&!force){ drawLots(); }
-  else { ['rcLots','lblLots'].forEach(function(id){ $(id).innerHTML='<div class="skel"></div><div class="skel"></div>'; }); }
-  return call('CRM_lots').then(function(r){ if(!r.ok){ toast(r.msg); return; } C.lots=r.lots; drawLots(); }).catch(function(e){ toast(e.message); });
+  if(!dcHas('CRM_lots')) ['rcLots','lblLots'].forEach(function(id){ $(id).innerHTML='<div class="skel"></div><div class="skel"></div>'; });
+  return view('CRM_lots',[],function(r){ C.lots=r.lots; drawLots(); },toast);
 }
 function lotBadge(l){ var c=/^received$/i.test(l.status)?'b-won':/short/i.test(l.status)?'b-lost':/receiving/i.test(l.status)?'b-pend':'b-blue'; return '<span class="badge '+c+'">'+esc(l.status)+'</span>'; }
 function lotCard(l,mode){ var sum=(l.lines||[]).map(function(x){ return x.boxes+' × '+x.product+' '+x.shade+(x.batch?' (batch '+x.batch+')':''); }).join('<br>');
@@ -840,8 +889,8 @@ function rcFinish(){ if(RC.q.size()){ toast('Still saving scans… try again in 
 var LD=null;
 function loadLoading(force){
   var nb=$('dsNewBtn'); if(nb) nb.hidden=!(ME&&ME.perms&&ME.perms.dispatch);
-  if(C.loading&&!force) drawOrders(); else $('ldOrders').innerHTML='<div class="skel"></div><div class="skel"></div>';
-  return call('CRM_loadingList').then(function(r){ if(!r.ok){ toast(r.msg); return; } C.loading=r; drawOrders(); }).catch(function(e){ toast(e.message); });
+  if(!dcHas('CRM_loadingList')) $('ldOrders').innerHTML='<div class="skel"></div><div class="skel"></div>';
+  return view('CRM_loadingList',[],function(r){ C.loading=r; drawOrders(); },toast);
 }
 function drawOrders(){ var o=C.loading.orders;
   $('ldOrders').innerHTML=o.length?o.map(function(p,i){ var need=0,got=0,hand=0; p.lines.forEach(function(l){ if(l.manual){ hand+=l.boxes; return; } need+=l.boxes; got+=l.scanned; });
@@ -865,7 +914,7 @@ function ldOpen(order){
   $('rcScanCard').innerHTML=''; $('ldScanCard').innerHTML=scannerHtml('ld')+'<div class="acts" style="margin-top:12px"><button class="sec" onclick="ldUndoOpen()">Undo a scan</button></div>'; ldDraw(); SCAN_CB=ldScan;
   LD.q=makeQueue(function(ids){ return call('CRM_scanOut',order.piNo,ids,order.free||'').then(function(res){ if(!res.ok) throw new Error(res.msg);
     res.results.forEach(function(x){ if(x.ok) setScanRow(x.id,'ok',x.result); else { var b=LD.loaded[x.id]; if(b){ delete LD.loaded[x.id]; LD.inStock[x.id]=b; var n=LD.need[b.product+'|'+b.shade+'|'+b.batch]||LD.need[b.product+'|'+b.shade]; if(n) n.d--; } setScanRow(x.id,'err',x.result); banner('err',x.id+': '+x.result); beep('err'); } });
-    ldDraw(); delete C.loading; }); });
+    ldDraw(); delete C.loading; dcDrop('CRM_loadingList'); }); });
 }
 function ldDraw(){ var keys=Object.keys(LD.need), done=0, tot=0;
   keys.forEach(function(k){ done+=Math.min(LD.need[k].d,LD.need[k].n); tot+=LD.need[k].n; });
@@ -1081,8 +1130,8 @@ function boxAct(id,a){ call('CRM_boxAction',id,a,'').then(function(r){ if(!r.ok)
 function reprint(id){ Promise.all([call('CRM_boxInfo',id),needQrLib()]).then(function(rs){ if(rs[0].ok) printLabels([rs[0].box],$('lblLayout').value); }); }
 
 /* ---------------- dispatch ---------------- */
-function loadDispatch(){ $('dList').innerHTML='<div class="skel"></div><div class="skel"></div>';
-  call('CRM_dispatchList').then(function(r){ if(!r.ok){ $('dList').innerHTML='<div class="msg err">'+esc(r.msg)+'</div>'; return; } C.disp=r; var td=todayYmd();
+function loadDispatch(){ if(!dcHas('CRM_dispatchList')) $('dList').innerHTML='<div class="skel"></div><div class="skel"></div>';
+  return view('CRM_dispatchList',[],function(r){ if(!r.ok){ $('dList').innerHTML='<div class="msg err">'+esc(r.msg)+'</div>'; return; } C.disp=r; var td=todayYmd();
     $('dList').innerHTML=r.pending.length?r.pending.map(function(p,i){ var ew=p.total>=r.ewayLimit;
       return '<div class="item"><div class="t">'+esc(p.piNo)+' · '+esc(p.customer)+'</div><div class="sub">'+esc(p.date)+' · '+money(p.total)+' · '+p.boxes+' boxes'+(p.scanned?' · <b>'+p.scanned+' scanned onto the truck</b>':'')+(p.invoice?' · Tally '+esc(p.invoice):' · not yet in Tally')+'</div>'+
         '<div class="sub" style="margin:6px 0">'+p.items.map(esc).join('<br>')+'</div>'+
@@ -1092,16 +1141,18 @@ function loadDispatch(){ $('dList').innerHTML='<div class="skel"></div><div clas
         '<div class="row"><div><label>E-way bill no.'+(ew?' *':'')+'</label><input id="dEw'+i+'"></div><div><label>Boxes loaded *</label><input id="dBx'+i+'" type="number" min="0" value="'+(p.scanned||p.boxes)+'"></div></div>'+
         '<div class="acts"><button class="sv" data-i="'+i+'">Save dispatch</button></div><div id="dMsg'+i+'"></div></div>'; }).join(''):'<div class="empty" style="margin-top:10px">Nothing waiting for dispatch.</div>';
     [].forEach.call($('dList').querySelectorAll('.sv'),function(b){ b.onclick=function(){ saveDispatch(+b.getAttribute('data-i')); }; });
-    $('dDone').innerHTML=r.done.length?r.done.map(function(d){ return esc(d.piNo)+' · '+esc(d.customer)+' · '+esc(d.dispatched)+(d.vehicle||d.lr?' · '+esc(d.vehicle||d.lr):''); }).join('<br>'):'None yet.';
-  }).catch(function(e){ $('dList').innerHTML='<div class="msg err">'+esc(e.message)+'</div>'; }); }
+    $('dDone').innerHTML=r.done.length?r.done.map(function(d,i){ return '<div style="display:flex;gap:8px;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eef1f6"><span>'+(d.slip?'Slip ':'')+esc(d.piNo)+' · '+esc(d.customer)+' · '+esc(d.dispatched)+(d.vehicle||d.lr?' · '+esc(d.vehicle||d.lr):'')+'</span>'+
+      (d.delivered?'<span class="badge b-won">Delivered '+esc(fmtYmd(d.delivered))+'</span>':'<button class="mini sec dlv" data-i="'+i+'">Mark delivered</button>')+'</div>'; }).join(''):'None yet.';
+    [].forEach.call($('dDone').querySelectorAll('.dlv'),function(b){ b.onclick=function(){ dlvOpen(r.done[+b.getAttribute('data-i')]); }; });
+  },function(m){ $('dList').innerHTML='<div class="msg err">'+esc(m)+'</div>'; }); }
 function saveDispatch(i){ var p=C.disp.pending[i];
   var b={ piNo:p.piNo, invoice:$('dInv'+i).value, date:$('dDate'+i).value, from:$('dFrom'+i).value, transporter:$('dTr'+i).value, vehicle:$('dVeh'+i).value, lr:$('dLr'+i).value, eway:$('dEw'+i).value, boxes:$('dBx'+i).value };
   msg('dMsg'+i,'Saving…','warn');
-  call('CRM_recordDispatch',b).then(function(r){ if(!r.ok){ msg('dMsg'+i,esc(r.msg)); return; } toast('Dispatch saved'+(r.warn?' (check boxes)':'')); delete C.pis; refreshHome(true); setTimeout(loadDispatch,600); }).catch(fail('dMsg'+i)); }
+  call('CRM_recordDispatch',b).then(function(r){ if(!r.ok){ msg('dMsg'+i,esc(r.msg)); return; } toast('Dispatch saved'+(r.warn?' (check boxes)':'')); delete C.pis; dcDrop('CRM_pis','CRM_approvals','CRM_dispatchList','CRM_dashboard'); refreshHome(true); setTimeout(loadDispatch,600); }).catch(fail('dMsg'+i)); }
 
 /* ---------------- approvals ---------------- */
-function loadApprovals(){ $('aList').innerHTML='<div class="skel"></div><div class="skel"></div>';
-  call('CRM_approvals').then(function(r){ if(!r.ok){ $('aList').innerHTML='<div class="msg err">'+esc(r.msg)+'</div>'; return; } C.apl=r;
+function loadApprovals(){ if(!dcHas('CRM_approvals')) $('aList').innerHTML='<div class="skel"></div><div class="skel"></div>';
+  return view('CRM_approvals',[],function(r){ if(!r.ok){ $('aList').innerHTML='<div class="msg err">'+esc(r.msg)+'</div>'; return; } C.apl=r;
     $('aList').innerHTML=r.pending.length?r.pending.map(function(p,i){ var short=0, rows=p.items.map(function(it){ var over=it.avail!==null&&it.boxes>it.avail; if(over) short++;
         return '<tr><td>'+esc(it.product)+' · '+esc(it.shade)+'</td><td class="amt">'+it.boxes+(it.loose?' + '+it.loose+' pcs':'')+'</td><td class="amt">₹'+it.net+(it.net!==it.list?' <span class="sub">(list '+it.list+')</span>':'')+'</td><td class="amt '+(over?'neg':'')+'">'+(it.avail===null?'–':it.avail)+'</td></tr>'; }).join('');
       return '<div class="item"><div class="t">'+esc(p.piNo)+' · '+esc(p.customer)+'</div><div class="sub">'+esc(p.date)+' · by '+esc(p.by||'-')+' · <b>'+money(p.total)+'</b>'+(short?' · <span class="neg">'+short+' line(s) over available stock</span>':'')+'</div>'+
@@ -1113,14 +1164,14 @@ function loadApprovals(){ $('aList').innerHTML='<div class="skel"></div><div cla
     [].forEach.call($('aList').querySelectorAll('.rjgo'),function(b){ b.onclick=function(){ var i=+b.getAttribute('data-i'), t=$('rjt'+i).value.trim(); if(!t){ msg('aMsg'+i,'A reason is required.'); return; } decide(i,'reject',t); }; });
     bindPiCards($('aList'));
     $('aRecent').innerHTML=r.recent.length?r.recent.map(function(d){ return esc(d.piNo)+' · '+esc(d.customer)+' · '+(d.status==='Lost'?'<span class="neg">Rejected</span>':'Approved')+' by '+esc(d.decisionBy)+' on '+esc(d.decisionAt)+(d.note?' · '+esc(d.note):''); }).join('<br>'):'None yet.';
-  }).catch(function(e){ $('aList').innerHTML='<div class="msg err">'+esc(e.message)+'</div>'; }); }
+  },function(m){ $('aList').innerHTML='<div class="msg err">'+esc(m)+'</div>'; }); }
 function decide(i,d,note){ var p=C.apl.pending[i]; msg('aMsg'+i,'Saving…','warn');
-  call('CRM_decide',{piNo:p.piNo,decision:d,note:note}).then(function(r){ if(!r.ok){ msg('aMsg'+i,esc(r.msg)); return; } toast(p.piNo+(d==='approve'?' approved':' rejected')); delete C.pis; refreshHome(true); loadApprovals(); }).catch(fail('aMsg'+i)); }
+  call('CRM_decide',{piNo:p.piNo,decision:d,note:note}).then(function(r){ if(!r.ok){ msg('aMsg'+i,esc(r.msg)); return; } toast(p.piNo+(d==='approve'?' approved':' rejected')); delete C.pis; dcDrop('CRM_pis','CRM_approvals','CRM_dispatchList','CRM_dashboard'); refreshHome(true); loadApprovals(); }).catch(fail('aMsg'+i)); }
 
 /* ---------------- dashboard ---------------- */
 function tile(k,v,s){ return '<div class="kpi"><div class="k">'+k+'</div><div class="v">'+v+'</div><div class="s">'+esc(s||'')+'</div></div>'; }
-function loadDash(){ $('dbBody').innerHTML='<div class="card"><div class="skel"></div><div class="skel"></div><div class="skel"></div></div>';
-  call('CRM_dashboard',$('dbPeriod').value).then(function(d){ if(!d.ok){ $('dbBody').innerHTML='<div class="msg err">'+esc(d.msg)+'</div>'; return; }
+function loadDash(){ var per=$('dbPeriod').value; if(!dcHas('CRM_dashboard',[per])) $('dbBody').innerHTML='<div class="card"><div class="skel"></div><div class="skel"></div><div class="skel"></div></div>';
+  return view('CRM_dashboard',[per],function(d){ if(!d.ok){ $('dbBody').innerHTML='<div class="msg err">'+esc(d.msg)+'</div>'; return; }
     $('dbRange').textContent=fmtYmd(d.from)+' to '+fmtYmd(d.to); var k=d.kpi, states=d.states.map(function(s){ return s.state; });
     var h='<div class="kpis">'+tile('Sales (before GST)',inr(k.sales),k.invoices+' invoices, '+k.customers+' customers')+tile('Unpaid now',d.recvAsOf?inr(k.outstanding):'–',d.recvAsOf?'as of '+fmtYmd(d.recvAsOf):'receivables not uploaded yet')+
       tile('Waiting approval',String(k.pendingPIs),inr(k.pendingPIValue))+tile('Approved, not billed',String(k.wonNotBilled),inr(k.wonNotBilledValue))+'</div>';
@@ -1136,10 +1187,286 @@ function loadDash(){ $('dbBody').innerHTML='<div class="card"><div class="skel">
     h+='<div class="card"><h2>Top customers</h2><table><thead><tr><th>Customer</th><th>Salesperson</th><th class="amt">Sales</th></tr></thead><tbody>'+
       d.topCustomers.map(function(c){ return '<tr><td>'+esc(c.customer)+'<div class="sub">'+esc(c.state)+'</div></td><td>'+esc(c.owner)+'</td><td class="amt">'+inr(c.taxable)+'</td></tr>'; }).join('')+'</tbody></table></div></div>';
     if(d.stockAlerts.length) h+='<div class="card"><h2>Stock to check</h2><div class="sub">'+d.stockAlerts.map(esc).join('<br>')+'</div></div>';
-    $('dbBody').innerHTML=h; }).catch(function(e){ $('dbBody').innerHTML='<div class="msg err">'+esc(e.message)+'</div>'; }); }
+    $('dbBody').innerHTML=h; },function(m){ $('dbBody').innerHTML='<div class="msg err">'+esc(m)+'</div>'; }); }
+
+/* ---------------- ATTENDANCE (check in / out from Home; board for admins) ---------------- */
+var PL_FILTER='open', PENDING_PI='', AT_DATE='';
+function hrHomeCard(){
+  var me=DC.CRM_hrMe, x='';
+  if(me&&me.linked&&me.tracked){
+    var field=me.emp.type==='Field', txt, btn='';
+    if(me.dayStatus&&!me.checkedIn) txt='Today: <b>'+esc(me.dayStatus)+'</b>';
+    else if(!me.checkedIn){ txt=field?'Start your day to mark attendance.':'You have not checked in yet.'; btn='<button id="hrBtn" data-type="in" class="green">'+(field?'Start my day':'Check in')+'</button>'; }
+    else if(!me.checkedOut){ txt=field?'Attendance marked for today ✓':'Checked in at <b>'+esc(me.in)+'</b>'+(me.status==='Late'?' · <span class="neg">late</span>':''); btn='<button id="hrBtn" data-type="out" class="sec">'+(field?'End my day':'Check out')+'</button>'; }
+    else txt=field?'Day ended ✓ See you tomorrow.':'In <b>'+esc(me.in)+'</b> · Out <b>'+esc(me.out)+'</b> · '+esc(me.status||'');
+    x+='<div class="card" style="display:flex;align-items:center;gap:12px;justify-content:space-between;flex-wrap:wrap"><div><h2 style="margin:0 0 2px">'+I.clock.replace('<svg','<svg style="width:18px;height:18px;vertical-align:-3px;margin-right:6px"')+'Attendance</h2><div class="sub">'+txt+'</div><div id="hrMsg"></div></div>'+btn+'</div>';
+  }
+  var ld=DC.CRM_leads;
+  if(ld&&ld.rows){ var due=ld.rows.filter(function(l){ return l.follow&&l.follow<=ld.today&&l.stage!=='Won'&&l.stage!=='Lost'&&(l.owner===ME.username||!ME.perms.seeAll); }).length;
+    if(due) x+='<div class="card att" id="fuCard" style="cursor:pointer"><span class="d warn"></span><span class="x"><b>'+due+'</b> lead follow-up'+(due>1?'s':'')+' due today or overdue</span><span class="c">›</span></div>'; }
+  return x;
+}
+function hrLoc(){ return new Promise(function(res){
+  if(!navigator.geolocation){ res({err:'This phone cannot share location.'}); return; }
+  navigator.geolocation.getCurrentPosition(function(p){ res({lat:p.coords.latitude,lng:p.coords.longitude,acc:p.coords.accuracy}); },
+    function(e){ res({err:e&&e.code===1?'denied':'unavailable'}); }, {enableHighAccuracy:true,timeout:20000,maximumAge:30000}); }); }
+function hrCheck(type){ var b=$('hrBtn'), label=b.textContent; b.disabled=true; b.textContent='Getting location…'; msg('hrMsg','');
+  var back=function(t){ b.disabled=false; b.textContent=label; if(t) msg('hrMsg',esc(t)); };
+  hrLoc().then(function(l){
+    if(!l||l.err){ back('Location is needed to mark attendance. Turn on Location on your phone and allow it for this app'+(l&&l.err==='denied'?' (it was blocked: allow it in the browser or app settings).':'.')); return; }
+    b.textContent='Saving…';
+    call('CRM_hrCheck',{type:type,lat:l.lat,lng:l.lng,acc:l.acc}).then(function(r){ if(!r.ok){ back(r.msg); return; }
+      DC.CRM_hrMe=r; DC_T.CRM_hrMe=Date.now(); dcDrop('CRM_hrDay','CRM_hrMonth'); dcSave(); beep('ok');
+      toast(type==='in'?(r.emp.type==='Field'?'Day started':'Checked in at '+r.in):(r.emp.type==='Field'?'Day ended':'Checked out at '+r.out)); drawHome(); }).catch(function(e){ back(e.message); });
+  }); }
+function loadAtt(){
+  if(ME.role==='Admin'){ AT_DATE=AT_DATE||todayYmd(); if(!dcHas('CRM_hrDay',[AT_DATE])) $('atBody').innerHTML='<div class="card"><div class="skel"></div><div class="skel"></div></div>';
+    return view('CRM_hrDay',[AT_DATE],drawAtBoard,function(m){ $('atBody').innerHTML='<div class="msg err">'+esc(m)+'</div>'; }); }
+  if(!dcHas('CRM_hrMe')) $('atBody').innerHTML='<div class="card"><div class="skel"></div></div>';
+  return view('CRM_hrMe',[],drawAtMine,function(m){ $('atBody').innerHTML='<div class="msg err">'+esc(m)+'</div>'; });
+}
+var ST_BADGE={Present:'b-won',Late:'b-pend','Half Day':'b-pend',Absent:'b-lost','Paid Leave':'b-blue','Unpaid Leave':'b-lost','Week Off':'b-blue',Holiday:'b-blue'};
+function stBadge(st){ return st?'<span class="badge '+(ST_BADGE[st]||'b-blue')+'">'+esc(st)+'</span>':'<span class="badge">Not marked</span>'; }
+function drawAtBoard(r){ var c=r.counts;
+  var h='<div class="card" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><h2 style="margin:0">Attendance</h2><input id="atDate" type="date" style="width:auto" value="'+esc(r.date)+'" max="'+todayYmd()+'">'+(r.off?'<span class="badge b-blue">'+esc(r.off)+'</span>':'')+'</div>';
+  h+='<div class="kpis">'+tile('Present',String(c.present),c.late?c.late+' late':'')+tile('Half day',String(c.half),'')+tile('Absent / leave',String(c.absent+c.leave),c.leave?c.leave+' on leave':'')+tile('Not marked',String(c.notMarked),c.off?c.off+' off':'')+'</div>';
+  h+='<div class="card"><div class="sub" style="margin-bottom:6px">Field staff show only the city. Tap a person to correct the day.</div>'+(r.rows.length?r.rows.map(function(x,i){
+    return '<div class="item atr" data-i="'+i+'" style="cursor:pointer"><div style="display:flex;justify-content:space-between;gap:8px"><span class="t">'+esc(x.name)+' <span class="sub">'+esc(x.type)+'</span></span>'+stBadge(x.status)+'</div>'+
+      '<div class="sub">'+(x.in?'In '+esc(x.in)+(x.out?' · Out '+esc(x.out):'')+(x.hours!==''?' · '+esc(x.hours)+' h':'')+(+x.late?' · late '+esc(x.late)+' min':'')+(+x.ot?' · OT '+esc(x.ot)+' h':''):'No check-in')+
+      (x.inLoc?' · '+esc(x.inLoc):'')+(x.remarks?'<br>'+esc(x.remarks):'')+'</div></div>'; }).join(''):'<div class="empty">No staff to track on this day.</div>')+'</div>';
+  $('atBody').innerHTML=h;
+  $('atDate').onchange=function(){ AT_DATE=this.value||todayYmd(); loadAtt(); };
+  [].forEach.call($('atBody').querySelectorAll('.atr'),function(b){ b.onclick=function(){ atEdit(r,r.rows[+b.getAttribute('data-i')]); }; });
+}
+function atEdit(day,x){
+  openModal('<h2>'+esc(x.name)+'</h2><div class="sub">'+esc(fmtYmd(day.date))+' · '+esc(x.type)+(x.by?' · marked by '+esc(x.by):'')+'</div>'+
+    '<label>Status</label><select id="aeSt"><option value="Auto">Work it out from the times</option>'+day.statuses.map(function(s){ return '<option'+(s===x.status&&!x.in?' selected':'')+'>'+esc(s)+'</option>'; }).join('')+'</select>'+
+    '<div class="row"><div><label>In (HH:MM)</label><input id="aeIn" type="time" value="'+esc(x.in)+'"></div><div><label>Out (HH:MM)</label><input id="aeOut" type="time" value="'+esc(x.out)+'"></div></div>'+
+    '<label>Remarks</label><input id="aeRem" value="'+esc(x.remarks)+'">'+
+    '<div class="acts"><button id="aeGo">Save</button><button class="sec" onclick="closeModal()">Cancel</button></div><div id="aeMsg"></div>');
+  if(x.in) $('aeSt').value='Auto';
+  $('aeGo').onclick=function(){ msg('aeMsg','Saving…','warn');
+    call('CRM_hrSave',{empId:x.id,date:day.date,status:$('aeSt').value,in:$('aeIn').value,out:$('aeOut').value,remarks:$('aeRem').value}).then(function(r){
+      if(!r.ok){ msg('aeMsg',esc(r.msg)); return; } closeModal(); toast('Saved'); dcDrop('CRM_hrDay','CRM_hrMonth','CRM_hrMe'); loadAtt(); }).catch(fail('aeMsg')); };
+}
+function drawAtMine(me){
+  if(!me.linked){ $('atBody').innerHTML='<div class="card"><h2>Attendance</h2><div class="empty">Your login is not linked to an employee record yet. Ask Hirak to link it under People.</div></div>'; return; }
+  var h='<div class="card"><h2>My attendance</h2>';
+  if(!me.tracked) h+='<div class="sub">Attendance is not tracked for your login.</div>';
+  else if(me.emp.type==='Field') h+='<div class="sub">Start your day from the Home screen each morning, and end it when you finish.</div><div style="margin-top:8px">'+(me.checkedIn?'Today: attendance marked ✓':'Today: not marked yet')+'</div>';
+  else h+=(me.recent&&me.recent.length?'<div class="tscroll"><table><thead><tr><th>Date</th><th>In</th><th>Out</th><th>Status</th></tr></thead><tbody>'+me.recent.map(function(r){
+      return '<tr><td>'+esc(fmtYmd(r.date))+'</td><td>'+esc(r.in||'–')+'</td><td>'+esc(r.out||'–')+'</td><td>'+stBadge(r.status)+(+r.late?' <span class="sub">'+esc(r.late)+' min</span>':'')+'</td></tr>'; }).join('')+'</tbody></table></div>':'<div class="empty">No days yet.</div>');
+  h+='</div>';
+  if(me.tracked){ var opts=[], d=new Date(); for(var i=1;i<=6;i++){ var x=new Date(d.getFullYear(),d.getMonth()-i,1); opts.push(x.getFullYear()+'-'+('0'+(x.getMonth()+1)).slice(-2)); }
+    h+='<div class="card"><h2>My payslips</h2><div class="row"><div><select id="psMonth">'+opts.map(function(m){ return '<option value="'+m+'">'+MN[+m.slice(5)-1]+' '+m.slice(0,4)+'</option>'; }).join('')+'</select></div><div><button id="psGo">View payslip</button></div></div><div id="psMsg"></div></div>'; }
+  $('atBody').innerHTML=h;
+  if($('psGo')) $('psGo').onclick=function(){ openPayslip($('psMonth').value,'','psMsg'); };
+}
+
+/* ---------------- PAYROLL (Hirak + Pandiyan) ---------------- */
+function loadPayroll(){ var m=$('prMonth'); if(!m.value) m.value=todayYmd().slice(0,7); var ym=m.value;
+  if(!dcHas('CRM_hrMonth',[ym])) $('prBody').innerHTML='<div class="card"><div class="skel"></div><div class="skel"></div></div>';
+  return view('CRM_hrMonth',[ym],drawPayroll,function(e){ $('prBody').innerHTML='<div class="msg err">'+esc(e)+'</div>'; }); }
+function drawPayroll(r){ var t=r.totals, cur=r.month===todayYmd().slice(0,7);
+  var h='<div class="kpis">'+tile('Total earnings',money(t.earned),r.rows.length+' staff')+tile('Net pay',money(t.net),'')+tile('PF (employee)',money(t.pf),'')+tile('Professional tax',money(t.pt),'')+'</div>';
+  if(cur) h+='<div class="msg warn">This month is still running. Paid days are counted up to the month end, so unmarked days are paid until the 5 AM job marks them.</div>';
+  if(!r.holidaysSet) h+='<div class="msg warn">No public holidays are listed in the attendance sheet\'s Holidays tab, so none are given off.</div>';
+  h+='<div class="card"><div class="tscroll"><table><thead><tr><th>Name</th><th class="amt">Paid days</th><th class="amt">Net pay</th><th class="amt">Earned</th><th class="amt">OT</th><th class="amt">Bonus</th><th class="amt">PF</th><th class="amt">PT</th><th class="amt">Advance</th></tr></thead><tbody>'+
+    r.rows.map(function(x,i){ return '<tr class="prr" data-i="'+i+'" style="cursor:pointer"><td><b>'+esc(x.name)+'</b><div class="sub">'+money(x.gross)+'/month'+(x.unmarked?' · '+x.unmarked+' day(s) unmarked':'')+(x.missed?' · <span class="neg">'+x.missed+' missed check-out</span>':'')+'</div></td>'+
+      '<td class="amt">'+x.paid+' / '+x.days+(x.lop?'<div class="sub">LOP '+x.lop+'</div>':'')+'</td><td class="amt"><b>'+money(x.net)+'</b></td><td class="amt">'+money(x.earned)+'</td><td class="amt">'+(x.otPay?money(x.otPay):'')+'</td><td class="amt">'+(x.bonus?money(x.bonus):'')+'</td>'+
+      '<td class="amt">'+(x.pf?money(x.pf):'')+'</td><td class="amt">'+(x.pt?money(x.pt):'')+'</td><td class="amt">'+(x.advance?money(x.advance):'')+'</td></tr>'; }).join('')+
+    '</tbody></table></div><div class="sub" style="margin-top:6px">Tap a person to add a bonus or an advance, or to see the payslip.</div></div>';
+  $('prBody').innerHTML=h;
+  [].forEach.call($('prBody').querySelectorAll('.prr'),function(b){ b.onclick=function(){ prEdit(r.month,r.rows[+b.getAttribute('data-i')]); }; });
+}
+function prEdit(ym,x){
+  openModal('<h2>'+esc(x.name)+'</h2><div class="sub">'+MN[+ym.slice(5)-1]+' '+ym.slice(0,4)+' · present '+(x.present+x.late)+', late '+x.late+', half day '+x.half+', absent '+x.absent+', leave '+(x.paidLeave+x.unpaid)+'</div>'+
+    '<div class="row"><div><label>Bonus / incentive (₹)</label><input id="peB" type="number" min="0" value="'+(x.bonus||'')+'"></div><div><label>Advance / other deduction (₹)</label><input id="peA" type="number" min="0" value="'+(x.advance||'')+'"></div></div>'+
+    '<label>Note</label><input id="peN" value="'+esc(x.note||'')+'">'+
+    '<div class="acts"><button id="peGo">Save</button><button class="sec" id="pePs">View payslip</button><button class="sec" onclick="closeModal()">Close</button></div><div id="peMsg"></div>');
+  $('pePs').onclick=function(){ openPayslip(ym,x.id,'peMsg'); };
+  $('peGo').onclick=function(){ msg('peMsg','Saving…','warn'); call('CRM_hrAdjust',{month:ym,empId:x.id,bonus:$('peB').value,advance:$('peA').value,note:$('peN').value}).then(function(r){
+    if(!r.ok){ msg('peMsg',esc(r.msg)); return; } DC[dcKey('CRM_hrMonth',[ym])]=r; dcSave(); closeModal(); toast('Saved'); drawPayroll(r); }).catch(fail('peMsg')); };
+}
+function inWords(n){ n=Math.round(n); if(!n) return 'Zero'; var a=['','One','Two','Three','Four','Five','Six','Seven','Eight','Nine','Ten','Eleven','Twelve','Thirteen','Fourteen','Fifteen','Sixteen','Seventeen','Eighteen','Nineteen'],
+  b=['','','Twenty','Thirty','Forty','Fifty','Sixty','Seventy','Eighty','Ninety'];
+  var two=function(x){ return x<20?a[x]:b[Math.floor(x/10)]+(x%10?' '+a[x%10]:''); }, three=function(x){ return (x>=100?a[Math.floor(x/100)]+' Hundred'+(x%100?' ':''):'')+(x%100?two(x%100):''); };
+  var out=[], cr=Math.floor(n/1e7), lk=Math.floor(n/1e5)%100, th=Math.floor(n/1e3)%100, rest=n%1000;
+  if(cr) out.push(two(cr)+' Crore'); if(lk) out.push(two(lk)+' Lakh'); if(th) out.push(two(th)+' Thousand'); if(rest) out.push(three(rest)); return out.join(' '); }
+function openPayslip(ym,empId,msgId){ msg(msgId,'Loading…','warn');
+  call('CRM_hrPayslip',ym,empId||'').then(function(r){ if(!r.ok){ msg(msgId,esc(r.msg)); return; } msg(msgId,''); var p=r.slip, mon=MN[+ym.slice(5)-1]+' '+ym.slice(0,4);
+    var ded=[['Provident Fund',p.pf],['Professional Tax',p.pt],['Advance / Other',p.advance]].filter(function(d){ return d[1]; });
+    var earn=p.split.map(function(s){ return [s.label,s.earned]; }); if(p.otPay) earn.push(['Overtime ('+p.ot+' h)',p.otPay]); if(p.bonus) earn.push(['Bonus / Incentive',p.bonus]);
+    var n=Math.max(earn.length,ded.length), rows='';
+    for(var i=0;i<n;i++) rows+='<tr><td>'+(earn[i]?esc(earn[i][0]):'')+'</td><td class="n">'+(earn[i]?money2(earn[i][1]):'')+'</td><td>'+(ded[i]?esc(ded[i][0]):'')+'</td><td class="n">'+(ded[i]?money2(ded[i][1]):'')+'</td></tr>';
+    var doc='<!DOCTYPE html><html><head><meta charset="utf-8"><title>Payslip '+esc(p.name)+' '+mon+'</title><style>@page{size:A4;margin:14mm}body{font-family:Arial,Helvetica,sans-serif;color:#0a1a3a;font-size:10.5pt;margin:0}'+
+      'h1{font-size:15pt;margin:0}h1 b{color:#e9831a}.k{color:#555;font-size:8.5pt}.top{display:flex;justify-content:space-between;border-bottom:2px solid #0a2a66;padding-bottom:6px}'+
+      '.meta{display:grid;grid-template-columns:repeat(4,1fr);gap:6px 14px;margin:10px 0}table{width:100%;border-collapse:collapse}th,td{border:1px solid #9aa7bd;padding:6px 8px;text-align:left}th{background:#eef2f8}.n{text-align:right}tfoot td{font-weight:700}</style></head><body>'+
+      '<div class="top"><div><h1>EUROBOND <b>SEALANT</b></h1><div class="k">'+esc(p.company)+(p.address?' · '+esc(p.address):'')+'</div></div><div style="text-align:right"><div class="k">PAYSLIP</div><div style="font-size:13pt;font-weight:700">'+mon+'</div></div></div>'+
+      '<div class="meta"><div><span class="k">Name</span><div><b>'+esc(p.name)+'</b></div></div><div><span class="k">Employee ID</span><div>'+esc(p.id)+'</div></div><div><span class="k">Designation</span><div>'+esc(p.desig||'')+'</div></div><div><span class="k">Department</span><div>'+esc(p.dept||'')+'</div></div>'+
+      '<div><span class="k">Days in month</span><div>'+p.days+'</div></div><div><span class="k">Paid days</span><div>'+p.paid+'</div></div><div><span class="k">Loss of pay days</span><div>'+p.lop+'</div></div><div><span class="k">Monthly gross</span><div>₹'+money2(p.gross)+'</div></div></div>'+
+      '<table><thead><tr><th>Earnings</th><th class="n">₹</th><th>Deductions</th><th class="n">₹</th></tr></thead><tbody>'+rows+'</tbody>'+
+      '<tfoot><tr><td>Total earnings</td><td class="n">'+money2(p.total)+'</td><td>Total deductions</td><td class="n">'+money2(p.deductions)+'</td></tr></tfoot></table>'+
+      '<div style="margin-top:12px;font-size:12pt"><b>Net pay: ₹'+money2(p.net)+'</b></div><div class="k">Rupees '+inWords(p.net)+' only</div>'+
+      '<div class="k" style="margin-top:24px">This is a computer-generated payslip and does not need a signature.</div></body></html>';
+    printInFrame(doc); }).catch(fail(msgId)); }
+
+/* ---------------- EXPENSES ---------------- */
+function loadExp(){ if(!dcHas('CRM_expList')) $('exBody').innerHTML='<div class="card"><div class="skel"></div><div class="skel"></div></div>';
+  return view('CRM_expList',[],drawExp,function(m){ $('exBody').innerHTML='<div class="msg err">'+esc(m)+'</div>'; }); }
+var EX_BADGE={Pending:'b-pend',Approved:'b-blue',Paid:'b-won',Rejected:'b-lost',Withdrawn:''};
+function exLine(x,admin){ return '<div class="item"><div style="display:flex;justify-content:space-between;gap:8px"><span class="t">'+money2(x.amount).replace(/\.00$/,'')+' · '+esc(x.category)+'</span><span class="badge '+(EX_BADGE[x.status]||'')+'">'+esc(x.status)+'</span></div>'+
+  '<div class="sub">'+(admin?'<b>'+esc(x.name)+'</b> · ':'')+esc(fmtYmd(x.date))+' · '+esc(x.details)+' · '+esc(x.no)+(x.note?'<br>'+esc(x.status==='Rejected'?'Reason: ':'Note: ')+esc(x.note):'')+(x.status==='Paid'?'<br>Paid '+esc(when(x.paidAt))+(x.ref?' · '+esc(x.ref):''):'')+'</div>'+
+  '<div class="acts">'+(x.hasReceipt?'<button class="mini sec exr" data-n="'+esc(x.no)+'">View bill</button>':'<span class="sub">No bill attached</span>')+
+  (admin&&x.status==='Pending'?'<button class="mini green exa" data-n="'+esc(x.no)+'">Approve</button><button class="mini red exj" data-n="'+esc(x.no)+'">Reject</button>':'')+
+  (admin&&x.status==='Approved'?'<button class="mini green exp" data-n="'+esc(x.no)+'">Mark paid</button>':'')+
+  (!admin&&x.status==='Pending'?'<button class="mini sec exw" data-n="'+esc(x.no)+'">Withdraw</button>':'')+'</div></div>'; }
+function drawExp(r){
+  var h='<div class="card"><div class="hrow"><h2>My expense claims</h2><button class="mini" id="exNew">+ New claim</button></div>'+(r.mine.length?r.mine.slice(0,40).map(function(x){ return exLine(x,false); }).join(''):'<div class="empty">No claims yet. Add one with a photo of the bill.</div>')+'</div>';
+  if(r.admin){
+    var cats=Object.keys(r.month.byCat), tot=cats.reduce(function(a,k){ return a+r.month.byCat[k]; },0);
+    h='<div class="card"><h2>Waiting for approval</h2>'+(r.pending.length?r.pending.map(function(x){ return exLine(x,true); }).join(''):'<div class="empty">Nothing to approve.</div>')+'</div>'+
+      '<div class="card"><h2>Approved, to pay</h2>'+(r.toPay.length?r.toPay.map(function(x){ return exLine(x,true); }).join(''):'<div class="empty">Nothing to pay.</div>')+'</div>'+
+      '<div class="card"><h2>This month: '+money(tot)+'</h2><div class="sub">'+(cats.length?cats.map(function(k){ return esc(k)+' '+money(r.month.byCat[k]); }).join(' · '):'No approved claims yet.')+'</div></div>'+h+
+      (r.recent.length?'<div class="card"><h2>Recently decided</h2>'+r.recent.slice(0,20).map(function(x){ return exLine(x,true); }).join('')+'</div>':'');
+  }
+  $('exBody').innerHTML=h;
+  $('exNew').onclick=exOpen;
+  var b=function(cls,fn){ [].forEach.call($('exBody').querySelectorAll(cls),function(x){ x.onclick=function(){ fn(x.getAttribute('data-n')); }; }); };
+  b('.exr',exBill); b('.exa',function(n){ exAct(n,'approve'); }); b('.exw',function(n){ if(window.confirm('Withdraw '+n+'?')) exAct(n,'withdraw'); });
+  b('.exj',function(n){ openModal('<h2>Reject '+esc(n)+'</h2><label>Reason *</label><input id="ejR"><div class="acts"><button class="red" id="ejGo">Reject</button><button class="sec" onclick="closeModal()">Cancel</button></div><div id="ejMsg"></div>');
+    $('ejGo').onclick=function(){ exAct(n,'reject',$('ejR').value,'','ejMsg'); }; });
+  b('.exp',function(n){ openModal('<h2>Mark '+esc(n)+' paid</h2><label>Payment reference (UPI / cash / NEFT)</label><input id="epR" placeholder="e.g. Cash, or UPI ref"><div class="acts"><button class="green" id="epGo">Mark paid</button><button class="sec" onclick="closeModal()">Cancel</button></div><div id="epMsg"></div>');
+    $('epGo').onclick=function(){ exAct(n,'paid','',$('epR').value,'epMsg'); }; });
+}
+function exAct(no,action,note,ref,mid){ if(mid) msg(mid,'Saving…','warn');
+  call('CRM_expAction',{no:no,action:action,note:note||'',ref:ref||''}).then(function(r){ if(!r.ok){ if(mid) msg(mid,esc(r.msg)); else toast(r.msg); return; }
+    DC.CRM_expList=r; DC_T.CRM_expList=Date.now(); dcSave(); closeModal(); toast({approve:'Approved',reject:'Rejected',paid:'Marked paid',withdraw:'Withdrawn'}[action]); drawExp(r); }).catch(function(e){ if(mid) msg(mid,esc(e.message)); else toast(e.message); }); }
+function exBill(no){ toast('Opening bill…'); call('CRM_expReceipt',no).then(function(r){ if(!r.ok){ toast(r.msg); return; }
+  var src='data:'+r.mime+';base64,'+r.data;
+  openModal('<h2>Bill · '+esc(no)+'</h2>'+(/pdf/.test(r.mime)?'<a href="'+src+'" download="'+esc(no)+'.pdf">Download PDF</a>':'<img src="'+src+'" style="max-width:100%;border-radius:8px">')+'<div class="acts"><button class="sec" onclick="closeModal()">Close</button></div>'); }).catch(function(e){ toast(e.message); }); }
+var EX_PHOTO='';
+function exOpen(){ var cats=(DC.CRM_expList&&DC.CRM_expList.categories)||['Conveyance','Travel','Meals','Accommodation','Office supplies','Freight','Courier','Other']; EX_PHOTO='';
+  openModal('<h2>New expense claim</h2><div class="row"><div><label>Date *</label><input id="enD" type="date" value="'+todayYmd()+'" max="'+todayYmd()+'"></div><div><label>Amount (₹) *</label><input id="enA" type="number" min="1" step="0.01" inputmode="decimal"></div></div>'+
+    '<label>Category *</label><select id="enC"><option value=""></option>'+cats.map(function(c){ return '<option>'+esc(c)+'</option>'; }).join('')+'</select>'+
+    '<label>What was it for? *</label><input id="enT" maxlength="300" placeholder="e.g. Auto to Ambattur site visit">'+
+    '<label>Photo of the bill</label><input id="enP" type="file" accept="image/*,application/pdf"><div id="enPv" class="sub"></div>'+
+    '<div class="acts"><button id="enGo">Submit claim</button><button class="sec" onclick="closeModal()">Cancel</button></div><div id="enMsg"></div>');
+  $('enP').onchange=function(){ var f=this.files&&this.files[0]; EX_PHOTO=''; $('enPv').textContent=''; if(!f) return;
+    if(f.type==='application/pdf'){ if(f.size>4.5e6){ $('enPv').textContent='PDF too large (max 4.5 MB).'; return; } var rd=new FileReader(); rd.onload=function(){ EX_PHOTO=rd.result; $('enPv').textContent='PDF attached ✓'; }; rd.readAsDataURL(f); return; }
+    $('enPv').textContent='Preparing photo…';
+    var img=new Image(), url=URL.createObjectURL(f); img.onload=function(){ var k=Math.min(1,1400/Math.max(img.width,img.height)), c=document.createElement('canvas'); c.width=Math.round(img.width*k); c.height=Math.round(img.height*k);
+      c.getContext('2d').drawImage(img,0,0,c.width,c.height); EX_PHOTO=c.toDataURL('image/jpeg',0.72); URL.revokeObjectURL(url); $('enPv').innerHTML='<img src="'+EX_PHOTO+'" style="max-height:120px;border-radius:6px;margin-top:6px">'; };
+    img.onerror=function(){ $('enPv').textContent='Could not read that photo.'; }; img.src=url; };
+  $('enGo').onclick=function(){ msg('enMsg','Saving…','warn'); this.disabled=true; var bt=this;
+    call('CRM_expSave',{date:$('enD').value,amount:$('enA').value,category:$('enC').value,details:$('enT').value,photo:EX_PHOTO}).then(function(r){ bt.disabled=false;
+      if(!r.ok){ msg('enMsg',esc(r.msg)); return; } DC.CRM_expList=r; DC_T.CRM_expList=Date.now(); dcSave(); closeModal(); toast(r.no+' submitted'); if(CUR==='expenses') drawExp(r); }).catch(function(e){ bt.disabled=false; msg('enMsg',esc(e.message)); }); };
+}
+
+/* ---------------- SALES PIPELINE ---------------- */
+var STAGE_BADGE={Enquiry:'b-blue',Sampling:'b-pend',Quotation:'b-pend',Won:'b-won',Lost:'b-lost'};
+function loadLeads(){ if(!dcHas('CRM_leads')) $('plBody').innerHTML='<div class="card"><div class="skel"></div><div class="skel"></div></div>';
+  return view('CRM_leads',[],drawLeads,function(m){ $('plBody').innerHTML='<div class="msg err">'+esc(m)+'</div>'; }); }
+function drawLeads(r){ var by={}, val={};
+  r.stages.forEach(function(s){ by[s]=0; val[s]=0; }); r.rows.forEach(function(l){ by[l.stage]=(by[l.stage]||0)+1; val[l.stage]=(val[l.stage]||0)+l.value; });
+  var isDue=function(l){ return l.follow&&l.follow<=r.today&&l.stage!=='Won'&&l.stage!=='Lost'; }, due=r.rows.filter(isDue).length;
+  var f=[['open','Open'],['due','Due ('+due+')']].concat(r.stages.map(function(s){ return [s,s+' ('+by[s]+')']; })).concat([['all','All']]);
+  var q=($('plQ')&&$('plQ').value)||'';
+  var h='<div class="kpis">'+['Enquiry','Sampling','Quotation','Won'].map(function(s){ return tile(s,String(by[s]),val[s]?inr(val[s]):''); }).join('')+'</div>'+
+    '<div class="card"><div class="hrow"><h2>Leads</h2><button class="mini" id="plNew">+ Lead</button></div>'+
+    '<div class="chips" id="plF" style="display:flex;gap:6px;flex-wrap:wrap;margin:6px 0">'+f.map(function(x){ return '<button class="mini '+(PL_FILTER===x[0]?'':'sec')+'" data-f="'+x[0]+'">'+esc(x[1])+'</button>'; }).join('')+'</div>'+
+    '<input id="plQ" placeholder="Search company, city, contact" value="'+esc(q)+'"><div id="plList"></div></div>';
+  $('plBody').innerHTML=h;
+  var list=function(){ var qq=$('plQ').value.trim().toLowerCase();
+    var rows=r.rows.filter(function(l){ if(PL_FILTER==='open'&&(l.stage==='Won'||l.stage==='Lost')) return false; if(PL_FILTER==='due'&&!isDue(l)) return false;
+      if(r.stages.indexOf(PL_FILTER)>=0&&l.stage!==PL_FILTER) return false; return !qq||(l.company+' '+l.city+' '+l.contact+' '+l.product).toLowerCase().indexOf(qq)>=0; })
+      .sort(function(a,b){ return (a.follow||'9999')<(b.follow||'9999')?-1:(a.follow||'9999')>(b.follow||'9999')?1:0; });
+    $('plList').innerHTML=rows.length?rows.map(function(l){ var d=isDue(l);
+      return '<div class="item pll" data-n="'+esc(l.no)+'" style="cursor:pointer"><div style="display:flex;justify-content:space-between;gap:8px"><span class="t">'+esc(l.company)+'</span><span class="badge '+(STAGE_BADGE[l.stage]||'')+'">'+esc(l.stage)+'</span></div>'+
+        '<div class="sub">'+[l.city,l.contact,l.product].filter(String).map(esc).join(' · ')+(l.value?' · '+inr(l.value):'')+(ME.perms.seeAll?' · '+esc(l.ownerName):'')+
+        (l.follow&&l.stage!=='Won'&&l.stage!=='Lost'?'<br><span class="'+(d?'neg':'')+'">Follow up '+esc(fmtYmd(l.follow))+(d?' (due)':'')+'</span>':'')+'</div></div>'; }).join(''):'<div class="empty">No leads here.</div>';
+    [].forEach.call($('plList').querySelectorAll('.pll'),function(b){ b.onclick=function(){ var n=b.getAttribute('data-n'); plOpen(r,r.rows.filter(function(l){ return l.no===n; })[0]); }; }); };
+  list(); $('plQ').oninput=list;
+  [].forEach.call($('plF').querySelectorAll('button'),function(b){ b.onclick=function(){ PL_FILTER=b.getAttribute('data-f'); drawLeads(r); }; });
+  $('plNew').onclick=function(){ plOpen(r,null); };
+}
+function plOpen(r,l){ var st=l?l.stage:'Enquiry';
+  var people=r.people?'<label>Owner</label><select id="lfO">'+r.people.map(function(p){ return '<option value="'+esc(p.username)+'"'+((l?l.owner:ME.username)===p.username?' selected':'')+'>'+esc(p.name)+'</option>'; }).join('')+'</select>':'';
+  openModal('<h2>'+(l?esc(l.company):'New lead')+'</h2>'+(l?'<div class="sub">'+esc(l.no)+' · '+esc(l.ownerName)+' · created '+esc(when(l.created))+'</div>':'')+
+    '<label>Company / person *</label><input id="lfC" value="'+esc(l?l.company:'')+'">'+
+    '<div class="row"><div><label>Contact person</label><input id="lfP" value="'+esc(l?l.contact:'')+'"></div><div><label>Phone</label><input id="lfPh" type="tel" value="'+esc(l?l.phone:'')+'"></div></div>'+
+    '<div class="row"><div><label>City</label><input id="lfCi" value="'+esc(l?l.city:'')+'"></div><div><label>State</label><input id="lfS" value="'+esc(l?l.state:'Tamil Nadu')+'"></div></div>'+
+    '<label>Products interested in</label><input id="lfPr" value="'+esc(l?l.product:'')+'" placeholder="e.g. 589 Black, GP Clear">'+
+    '<div class="row"><div><label>Stage</label><select id="lfSt">'+r.stages.map(function(s){ return '<option'+(s===st?' selected':'')+'>'+s+'</option>'; }).join('')+'</select></div><div><label>Expected order value (₹)</label><input id="lfV" type="number" min="0" value="'+(l&&l.value?l.value:'')+'"></div></div>'+
+    '<div id="lfLostW"'+(st==='Lost'?'':' hidden')+'><label>Why lost? *</label><input id="lfL" value="'+esc(l?l.lost:'')+'"></div>'+
+    '<label>Next follow-up</label><input id="lfF" type="date" value="'+esc(l?l.follow:'')+'">'+people+
+    '<label>Notes</label><input id="lfN" value="'+esc(l?l.notes:'')+'">'+(l?'<label>Add an update (visit, call…)</label><input id="lfU" placeholder="e.g. Sample given, will test this week">':'')+
+    (l&&l.history?'<div class="sub" style="margin-top:8px;white-space:pre-line;max-height:120px;overflow:auto">'+esc(l.history)+'</div>':'')+
+    '<div class="acts"><button id="lfGo">Save</button>'+(l&&l.stage==='Won'?'<button class="green" id="lfPi">Make PI</button>':'')+(l&&l.phone?'<a class="mini sec" style="padding:9px 12px;border-radius:10px;text-decoration:none" href="tel:'+esc(l.phone)+'">Call</a>':'')+'<button class="sec" onclick="closeModal()">Cancel</button></div><div id="lfMsg"></div>');
+  $('lfSt').onchange=function(){ $('lfLostW').hidden=this.value!=='Lost'; };
+  if($('lfPi')) $('lfPi').onclick=function(){ closeModal(); plWon(l.customer||l.company,l); };
+  $('lfGo').onclick=function(){ var p={ no:l?l.no:'', company:$('lfC').value, contact:$('lfP').value, phone:$('lfPh').value, city:$('lfCi').value, state:$('lfS').value, product:$('lfPr').value,
+      stage:$('lfSt').value, value:$('lfV').value, lost:$('lfL').value, follow:$('lfF').value, notes:$('lfN').value, update:$('lfU')?$('lfU').value:'' };
+    if($('lfO')) p.owner=$('lfO').value;
+    var won=p.stage==='Won'&&(!l||l.stage!=='Won');
+    msg('lfMsg','Saving…','warn');
+    call('CRM_leadSave',p).then(function(res){ if(!res.ok){ msg('lfMsg',esc(res.msg)); return; } DC.CRM_leads=res; DC_T.CRM_leads=Date.now(); dcSave(); closeModal(); toast('Saved');
+      if(won){ var nl=res.rows.filter(function(x){ return x.no===res.no; })[0]; plWon(p.company,nl); } else if(CUR==='pipeline') drawLeads(res); else if(CUR==='home') drawHome(); }).catch(fail('lfMsg')); };
+}
+function plWon(name,l){
+  if(custExists(name)){ plStartPi(name); return; }
+  var hit=B.customers.filter(function(c){ return c.name.toLowerCase()===String(name).toLowerCase(); })[0]; if(hit){ plStartPi(hit.name); return; }
+  PENDING_PI=name; go('customers'); openCustForm(null); $('cName').value=name; if(l){ $('cCity').value=l.city||''; if(l.state) $('cState').value=l.state; $('cContact').value=l.phone||l.contact||''; }
+  toast('Won! Add the customer\'s address and GSTIN, then save to make the PI.',5000);
+}
+function plStartPi(name){ go('newpi'); $('piCust').value=name; $('piCust').dispatchEvent(new Event('change')); toast('Customer filled in. Add the items.'); }
+
+/* ---------------- PEOPLE (directory; admins add and edit) ---------------- */
+function loadPeople(){ if(!dcHas('CRM_hrTeam')) $('ppBody').innerHTML='<div class="card"><div class="skel"></div><div class="skel"></div></div>';
+  return view('CRM_hrTeam',[],drawPeople,function(m){ $('ppBody').innerHTML='<div class="msg err">'+esc(m)+'</div>'; }); }
+function drawPeople(r){ var admin=!!r.logins;
+  var h='<div class="card"><div class="hrow"><h2>People</h2>'+(admin?'<button class="mini" id="ppNew">+ Add person</button>':'')+'</div><input id="ppQ" placeholder="Search name or department"><div id="ppList"></div></div>';
+  if(admin){ var linked={}; r.people.forEach(function(p){ if(p.login) linked[p.login]=1; });
+    var un=r.logins.filter(function(x){ return !linked[x.username]; });
+    if(un.length) h+='<div class="msg warn">Logins not linked to a person (they cannot mark attendance or see payslips): '+un.map(function(x){ return esc(x.name)+' ('+esc(x.username)+')'; }).join(', ')+'. Open the person and pick their login.</div>'; }
+  $('ppBody').innerHTML=h;
+  var list=function(){ var q=$('ppQ').value.trim().toLowerCase();
+    var rows=r.people.filter(function(p){ return !q||(p.name+' '+p.dept+' '+p.desig).toLowerCase().indexOf(q)>=0; });
+    $('ppList').innerHTML=rows.map(function(p,i){ return '<div class="item"'+(admin?' style="cursor:pointer" data-id="'+esc(p.id)+'"':'')+'><div style="display:flex;justify-content:space-between;gap:8px"><span class="t">'+esc(p.name)+(admin&&!p.active?' <span class="badge b-lost">Inactive</span>':'')+'</span>'+
+      (p.mobile?'<a href="tel:'+esc(p.mobile)+'" onclick="event.stopPropagation()">'+esc(p.mobile)+'</a>':'')+'</div><div class="sub">'+[p.desig,p.dept].filter(String).map(esc).join(' · ')+
+      (admin?' · '+esc(p.id)+' · '+esc(p.type)+(p.gross?' · '+money(p.gross)+'/month':'')+(p.login?' · login '+esc(p.login):(p.type!=='Not Tracked'?' · <span class="neg">no login linked</span>':'')):'')+'</div></div>'; }).join('')||'<div class="empty">Nobody found.</div>';
+    if(admin) [].forEach.call($('ppList').querySelectorAll('[data-id]'),function(b){ b.onclick=function(){ var id=b.getAttribute('data-id'); ppOpen(r,r.people.filter(function(p){ return p.id===id; })[0]); }; }); };
+  list(); $('ppQ').oninput=list; if($('ppNew')) $('ppNew').onclick=function(){ ppOpen(r,null); };
+}
+function ppOpen(r,p,confirmSame){
+  openModal('<h2>'+(p?esc(p.name)+' <span class="sub">'+esc(p.id)+'</span>':'Add a person')+'</h2>'+
+    '<label>Name *</label><input id="ppN" value="'+esc(p?p.name:'')+'">'+
+    '<div class="row"><div><label>Designation</label><input id="ppD" value="'+esc(p?p.desig:'')+'"></div><div><label>Department</label><input id="ppDe" value="'+esc(p?p.dept:'')+'"></div></div>'+
+    '<div class="row"><div><label>Attendance</label><select id="ppT"><option value="Office">Office (check in at the office, times and late marks)</option><option value="Field">Field (marked present anywhere, city only)</option><option value="Not Tracked">Not tracked (owners, directors)</option></select></div><div><label>Mobile</label><input id="ppM" type="tel" value="'+esc(p?p.mobile:'')+'"></div></div>'+
+    '<div class="row"><div><label>Joining date *</label><input id="ppJ" type="date" value="'+esc(p?p.joining:'')+'"></div><div><label>Monthly gross (₹)</label><input id="ppG" type="number" min="0" value="'+(p&&p.gross?p.gross:'')+'"></div></div>'+
+    '<div class="row"><div><label>PF</label><select id="ppPf"><option value="no">Not PF eligible</option><option value="yes">PF eligible</option></select></div><div><label>Status</label><select id="ppA"><option value="yes">Active</option><option value="no">Inactive (left)</option></select></div></div>'+
+    '<label>CRM login</label><select id="ppL"><option value="">(none)</option>'+r.logins.map(function(x){ return '<option value="'+esc(x.username)+'">'+esc(x.name)+' · '+esc(x.username)+' ('+esc(x.role)+')</option>'; }).join('')+'</select>'+
+    '<div class="acts"><button id="ppGo">Save</button><button class="sec" onclick="closeModal()">Cancel</button></div><div id="ppMsg"></div>');
+  $('ppT').value=p?p.type:'Office'; $('ppPf').value=p&&p.pf?'yes':'no'; $('ppA').value=p&&p.active===false?'no':'yes'; $('ppL').value=p?p.login:'';
+  $('ppGo').onclick=function(){ ppSave(r,p,false); };
+}
+function ppSave(r,p,confirmSame){ msg('ppMsg','Saving…','warn');
+  call('CRM_hrSaveEmp',{id:p?p.id:'',name:$('ppN').value,desig:$('ppD').value,dept:$('ppDe').value,type:$('ppT').value,mobile:$('ppM').value,joining:$('ppJ').value,gross:$('ppG').value,
+    pf:$('ppPf').value==='yes',active:$('ppA').value==='yes',login:$('ppL').value,confirmSame:!!confirmSame}).then(function(res){
+    if(!res.ok){ if(res.confirm){ msg('ppMsg',esc(res.msg)+' <button class="mini" id="ppC">Yes, add</button>','warn'); $('ppC').onclick=function(){ ppSave(r,p,true); }; return; } msg('ppMsg',esc(res.msg)); return; }
+    DC.CRM_hrTeam=res; DC_T.CRM_hrTeam=Date.now(); dcDrop('CRM_hrMe','CRM_hrDay','CRM_hrMonth'); dcSave(); closeModal(); toast('Saved'); drawPeople(res); }).catch(fail('ppMsg')); }
+
+/* ---------------- DELIVERY ---------------- */
+function dlvOpen(d){
+  openModal('<h2>Delivered: '+esc(d.piNo)+'</h2><div class="sub">'+esc(d.customer)+' · dispatched '+esc(d.dispatched)+'</div>'+
+    '<div class="row"><div><label>Delivered on *</label><input id="dvD" type="date" value="'+todayYmd()+'" max="'+todayYmd()+'"></div><div><label>Received by</label><input id="dvB" placeholder="Name at the customer"></div></div>'+
+    '<label>Note</label><input id="dvN" placeholder="e.g. 2 boxes damaged"><div class="acts"><button class="green" id="dvGo">Save</button><button class="sec" onclick="closeModal()">Cancel</button></div><div id="dvMsg"></div>');
+  $('dvGo').onclick=function(){ msg('dvMsg','Saving…','warn'); call('CRM_markDelivered',{ref:d.piNo,customer:d.customer,date:$('dvD').value,by:$('dvB').value,note:$('dvN').value}).then(function(r){
+    if(!r.ok){ msg('dvMsg',esc(r.msg)); return; } DC.CRM_dispatchList=r; DC_T.CRM_dispatchList=Date.now(); dcSave(); closeModal(); toast('Marked delivered'); loadDispatch(); }).catch(fail('dvMsg')); };
+}
 
 /* ---------------- team ---------------- */
-function loadTeam(){ call('CRM_team').then(function(r){ if(!r.ok){ toast(r.msg); return; } C.team=r; drawUsers(); drawOwners(); }).catch(function(e){ toast(e.message); }); }
+function loadTeam(){ return view('CRM_team',[],function(r){ C.team=r; drawUsers(); drawOwners(); },toast); }
 function drawUsers(){ $('uBody').innerHTML=C.team.users.map(function(u,i){ return '<tr><td><b>'+esc(u.name)+'</b>'+(u.active?'':' <span class="badge b-lost">Off</span>')+(u.pinSet?'':' <span class="badge b-pend">No PIN</span>')+'</td><td>'+esc(u.username)+'</td><td>'+esc(u.role)+'</td><td class="hide-sm">'+esc(u.last||'never')+'</td><td><button class="mini sec ue" data-i="'+i+'">Edit</button></td></tr>'; }).join('');
   [].forEach.call($('uBody').querySelectorAll('.ue'),function(b){ b.onclick=function(){ openUser(C.team.users[+b.getAttribute('data-i')]); }; }); }
 function openUser(u){ EDIT_USER=u||null; $('uForm').hidden=false; msg('uMsg',''); $('uUser').value=u?u.username:''; $('uUser').disabled=!!u; $('uName').value=u?u.name:''; $('uRole').value=u?u.role:'Sales';
